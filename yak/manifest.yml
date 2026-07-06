@@ -7,6 +7,7 @@ description: >
   HopperGroup is a Grasshopper plugin that automatically keeps dragged
   components and parameters inside the group region they occupy, including
   nested group hierarchy repair.
+url: https://github.com/tsoumdoa/hoppergroup
 icon: icon.png
 keywords:
   - utility
