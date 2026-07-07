@@ -67,7 +67,7 @@ namespace HopperGroup
                 return;
             }
 
-            ProcessObjects(GetManagedObjects(_document.Objects), dragBounds: null, refreshCache: true, expireOwner: false);
+            ProcessObjects(GetManagedObjects(_document.Objects), dragBounds: null, refreshCache: true, expireOwner: false, selectionContext: SelectionContext.Empty);
         }
 
         public void Dispose()
@@ -170,10 +170,12 @@ namespace HopperGroup
                 selectedObjects.Add(_owner);
             }
 
-            ProcessObjects(selectedObjects, GetCombinedBounds(selectedObjects), refreshCache: false, expireOwner: true);
+            RebuildCacheIfNeeded();
+            var selectionContext = CreateSelectionContext(selectedObjects);
+            ProcessObjects(selectedObjects, GetCombinedBounds(selectedObjects), refreshCache: false, expireOwner: true, selectionContext: selectionContext);
         }
 
-        private void ProcessObjects(IList<IGH_DocumentObject> objects, RectangleF? dragBounds, bool refreshCache, bool expireOwner)
+        private void ProcessObjects(IList<IGH_DocumentObject> objects, RectangleF? dragBounds, bool refreshCache, bool expireOwner, SelectionContext selectionContext)
         {
             if (_handlingDrop || _document == null)
             {
@@ -195,11 +197,22 @@ namespace HopperGroup
                 }
 
                 var recordedGroups = new HashSet<Guid>();
-                LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
+                selectionContext = selectionContext ?? SelectionContext.Empty;
+
+                if (!selectionContext.HasCarriedGroups)
+                {
+                    LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
+                }
 
                 foreach (var obj in objects)
                 {
-                    LastChangeCount += UpdateObjectMembership(obj, dragBounds ?? obj.Attributes.Bounds, recordedGroups);
+                    LastChangeCount += UpdateObjectMembership(obj, dragBounds ?? obj.Attributes.Bounds, recordedGroups, selectionContext);
+                }
+
+                if (selectionContext.HasCarriedGroups)
+                {
+                    RebuildGroupCache();
+                    LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
                 }
 
                 if (LastChangeCount > 0)
@@ -335,7 +348,82 @@ namespace HopperGroup
             return changes;
         }
 
-        private int UpdateObjectMembership(IGH_DocumentObject obj, RectangleF dragBounds, HashSet<Guid> recordedGroups)
+        private SelectionContext CreateSelectionContext(IList<IGH_DocumentObject> selectedObjects)
+        {
+            if (selectedObjects == null || selectedObjects.Count == 0)
+            {
+                return SelectionContext.Empty;
+            }
+
+            var selectedIds = new HashSet<Guid>(selectedObjects.Select(obj => obj.InstanceGuid));
+            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var carriedGroupIds = new HashSet<Guid>();
+            var completeGroups = new Dictionary<Guid, bool>();
+
+            foreach (var group in _groups)
+            {
+                if (IsCompleteSelectedGroup(group.Group, selectedIds, objectsById, completeGroups, new HashSet<Guid>()))
+                {
+                    carriedGroupIds.Add(group.Id);
+                    Log($"Preserving carried group {group.Id}.");
+                }
+            }
+
+            return carriedGroupIds.Count == 0
+                ? SelectionContext.Empty
+                : new SelectionContext(carriedGroupIds);
+        }
+
+        private static bool IsCompleteSelectedGroup(
+            GH_Group group,
+            HashSet<Guid> selectedIds,
+            Dictionary<Guid, IGH_DocumentObject> objectsById,
+            Dictionary<Guid, bool> completeGroups,
+            HashSet<Guid> visiting)
+        {
+            if (group == null || group.ObjectIDs.Count == 0)
+            {
+                return false;
+            }
+
+            var groupId = group.InstanceGuid;
+            if (completeGroups.TryGetValue(groupId, out var cachedResult))
+            {
+                return cachedResult;
+            }
+
+            if (!visiting.Add(groupId))
+            {
+                completeGroups[groupId] = false;
+                return false;
+            }
+
+            var isComplete = group.ObjectIDs.All(objectId =>
+                IsCompleteSelectedMember(objectId, selectedIds, objectsById, completeGroups, visiting));
+
+            visiting.Remove(groupId);
+            completeGroups[groupId] = isComplete;
+            return isComplete;
+        }
+
+        private static bool IsCompleteSelectedMember(
+            Guid objectId,
+            HashSet<Guid> selectedIds,
+            Dictionary<Guid, IGH_DocumentObject> objectsById,
+            Dictionary<Guid, bool> completeGroups,
+            HashSet<Guid> visiting)
+        {
+            if (!objectsById.TryGetValue(objectId, out var obj))
+            {
+                return false;
+            }
+
+            return obj is GH_Group childGroup
+                ? IsCompleteSelectedGroup(childGroup, selectedIds, objectsById, completeGroups, visiting)
+                : IsManagedObject(obj) && selectedIds.Contains(objectId);
+        }
+
+        private int UpdateObjectMembership(IGH_DocumentObject obj, RectangleF dragBounds, HashSet<Guid> recordedGroups, SelectionContext selectionContext)
         {
             if (!IsManagedObject(obj))
             {
@@ -354,6 +442,12 @@ namespace HopperGroup
             foreach (var current in currentGroups)
             {
                 var exitBounds = GetExitBounds(current.Bounds, dragBounds);
+
+                if (selectionContext.IsCarriedGroup(current.Id))
+                {
+                    retainedGroupIds.Add(current.Id);
+                    continue;
+                }
 
                 if (target != null && current.Id == target.Id)
                 {
@@ -520,6 +614,25 @@ namespace HopperGroup
             public Guid Id { get; }
             public RectangleF Bounds { get; }
             public float Area { get; }
+        }
+
+        private sealed class SelectionContext
+        {
+            public static readonly SelectionContext Empty = new SelectionContext(new HashSet<Guid>());
+
+            private readonly HashSet<Guid> _carriedGroupIds;
+
+            public SelectionContext(HashSet<Guid> carriedGroupIds)
+            {
+                _carriedGroupIds = carriedGroupIds;
+            }
+
+            public bool HasCarriedGroups => _carriedGroupIds.Count > 0;
+
+            public bool IsCarriedGroup(Guid groupId)
+            {
+                return _carriedGroupIds.Contains(groupId);
+            }
         }
     }
 }
