@@ -411,6 +411,154 @@ class Program
             Assert(child.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
                 && !g.ObjectIDs.Contains(child.InstanceGuid), "translated parent stretched around the native child drag");
         });
+        Check("Re-enabling uses the layout edited while disabled", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            m.Configure(null, d, false, 1, false);
+            a.Move(500); b.Move(500);
+            m.Configure(null, d, true, 1, false);
+            a.Move(5);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0, "re-enable used the old boundary");
+            a.Move(500);
+            m.RefreshAllObjects();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid),
+                "re-enable stopped later exits from being processed");
+        });
+        Check("Manual addition expands the boundary before an external member move", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            g.AddObject(o.InstanceGuid);
+            a.Move(500);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 3 && d.UndoServer.UndoCount == 0, "manual addition kept a stale boundary");
+        });
+        Check("Manual addition still allows an external member to leave the enlarged group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            g.AddObject(o.InstanceGuid);
+            a.Move(1500);
+            m.RefreshAllObjects();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Count == 2, "live outline swallowed the exit");
+        });
+        Check("Manual removal shrinks the boundary before an external member move", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            g.AddObject(o.InstanceGuid);
+            m.RefreshAllObjects();
+            g.RemoveObject(o.InstanceGuid);
+            a.Move(500);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 1 && g.ObjectIDs.Contains(b.InstanceGuid), "removed member left an oversized boundary");
+        });
+        Check("Manual nested membership edits update ancestor boundaries", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(a.InstanceGuid);
+            d.Add(child);
+            g.RemoveObject(a.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            child.AddObject(o.InstanceGuid);
+            a.Move(500);
+            m.RefreshAllObjects();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid)
+                && g.ObjectIDs.Contains(child.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid),
+                "nested membership edit used an old boundary");
+        });
+        Check("Manual group edits preserve unrelated pending external movement", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var target = new GH_Group(d);
+            var far = new Obj(1500);
+            d.Add(far);
+            target.AddObject(o.InstanceGuid);
+            d.Add(target);
+            m.RefreshAllObjects();
+            a.Move(500);
+            target.AddObject(far.InstanceGuid);
+            o.Move(100);
+            m.RefreshAllObjects();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && target.ObjectIDs.Count == 2,
+                "manual edit erased another group's pending movement");
+        });
+        Check("Disabled input detaches handlers and does no work on canvas or document events", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var owner = new HopperGroupComponent();
+            m.Configure(owner, d, true, 1, true);
+            m.Configure(owner, d, false, 1, true);
+            var log = m.DebugLog;
+            var cacheExpirations = g.CacheExpirations;
+            c.Down(); a.Move(500); c.Up();
+            var added = new Obj(30);
+            d.Add(added); d.Selection.Add(added); c.Up();
+            var otherGroup = new GH_Group(d);
+            d.Add(otherGroup); d.Delete(otherGroup);
+            d.RaiseUndoStateChanged(GH_UndoOperation.Undo);
+            d.RaiseUndoStateChanged(GH_UndoOperation.Redo);
+            m.RefreshAllObjects();
+            Assert(c.HandlerCount == 0 && d.HandlerCount == 0, "disabled manager kept event handlers");
+            Assert(g.ObjectIDs.Count == 2 && !g.ObjectIDs.Contains(added.InstanceGuid)
+                && d.UndoServer.UndoCount == 0 && !d.IsModified, "disabled manager edited memberships or undo history");
+            Assert(g.CacheExpirations == cacheExpirations && m.DebugLog == log && owner.RefreshCount == 0,
+                "disabled manager scanned groups, logged, or recomputed its owner");
+            Assert(m.LastChangeCount == 0 && m.Status == "Disabled", "disabled status retained old changes");
+        });
+        Check("Grasshopper Disable stops an in-progress drag and unlock uses the current layout", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var owner = new HopperGroupComponent();
+            m.Configure(owner, d, true, 1, false);
+            c.Down();
+            owner.Locked = true;
+            a.Move(500); b.Move(500); c.Up();
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 2 && d.UndoServer.UndoCount == 0 && owner.RefreshCount == 0,
+                "host-disabled component still processed movement");
+            Assert(c.HandlerCount == 0 && d.HandlerCount == 0, "host Disable left event handlers attached");
+            owner.Locked = false;
+            a.Move(5);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 2, "unlock restored the stale boundary");
+            c.Down(); a.Move(500); c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "unlock did not resume later drags");
+        });
+        Check("A component loaded locked stays inactive even with Enabled true", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var owner = new HopperGroupComponent { Locked = true };
+            m.Configure(owner, d, true, 1, false);
+            c.Down(); a.Move(500); c.Up();
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 2 && d.UndoServer.UndoCount == 0
+                && c.HandlerCount == 0 && d.HandlerCount == 0, "loaded disabled component ran");
+        });
+        Check("Unlocking does not override a false Enabled input", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var owner = new HopperGroupComponent();
+            m.Configure(owner, d, false, 1, false);
+            owner.Locked = true;
+            owner.Locked = false;
+            c.Down(); a.Move(500); c.Up();
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 2 && d.UndoServer.UndoCount == 0
+                && c.HandlerCount == 0 && d.HandlerCount == 0, "unlock overrode Enabled=false");
+        });
+        Check("Disposed manager cannot be restarted by an owner enable event", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var owner = new HopperGroupComponent();
+            m.Configure(owner, d, true, 1, false);
+            m.Dispose();
+            owner.Locked = true; owner.Locked = false;
+            c.Down(); a.Move(500); c.Up();
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 2 && c.HandlerCount == 0 && d.HandlerCount == 0,
+                "disposed manager resumed handling events");
+        });
         Console.WriteLine("Failed: " + failures);
         Environment.ExitCode = failures == 0 ? 0 : 1;
     }

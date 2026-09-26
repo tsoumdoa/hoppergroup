@@ -40,6 +40,7 @@ namespace Grasshopper.GUI.Canvas
     {
         public GH_Document Document;
         public event EventHandler<System.Windows.Forms.MouseEventArgs> MouseDown, MouseUp;
+        public int HandlerCount => (MouseDown?.GetInvocationList().Length ?? 0) + (MouseUp?.GetInvocationList().Length ?? 0);
         public void Down() => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
         public void Up() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(100, 0) });
     }
@@ -103,6 +104,11 @@ namespace Grasshopper.Kernel
         public List<IGH_DocumentObject> Objects = new();
     }
     public enum GH_UndoOperation { ClearUndoStack, ClearRedoStack, RecordAdded, RecordRemoved, Undo, Redo }
+    public enum GH_ObjectEventType { Enabled }
+    public class GH_ObjectChangedEventArgs : EventArgs
+    {
+        public GH_ObjectEventType Type;
+    }
     public class GH_DocUndoEventArgs : EventArgs
     {
         public GH_UndoOperation Operation;
@@ -137,6 +143,8 @@ namespace Grasshopper.Kernel
         public bool IsModified;
         public event EventHandler<GH_DocObjectEventArgs> ObjectsAdded, ObjectsDeleted;
         public event EventHandler<GH_DocUndoEventArgs> UndoStateChanged;
+        public int HandlerCount => (ObjectsAdded?.GetInvocationList().Length ?? 0)
+            + (ObjectsDeleted?.GetInvocationList().Length ?? 0) + (UndoStateChanged?.GetInvocationList().Length ?? 0);
         // Tests restore the recorded layout first, matching the host's completed Undo/Redo event.
         public void RaiseUndoStateChanged(GH_UndoOperation operation) =>
             UndoStateChanged?.Invoke(this, new GH_DocUndoEventArgs { Operation = operation });
@@ -173,7 +181,8 @@ namespace Grasshopper.Kernel.Special
             };
         }
         public void CreateAttributes() { }
-        public void ExpireCaches() { }
+        public int CacheExpirations;
+        public void ExpireCaches() { CacheExpirations++; }
         public void AddObject(Guid id)
         {
             if (!ObjectIDs.Contains(id)) ObjectIDs.Add(id);
@@ -181,5 +190,24 @@ namespace Grasshopper.Kernel.Special
         public void RemoveObject(Guid id) => ObjectIDs.Remove(id);
     }
 }
-namespace HopperGroup { public class HopperGroupComponent { public void ScheduleOutputRefresh() { } } }
+namespace HopperGroup
+{
+    public class HopperGroupComponent : Obj
+    {
+        private bool locked;
+        public event Action<IGH_DocumentObject, GH_ObjectChangedEventArgs> ObjectChanged;
+        public bool Locked
+        {
+            get => locked;
+            set
+            {
+                if (locked == value) return;
+                locked = value;
+                ObjectChanged?.Invoke(this, new GH_ObjectChangedEventArgs { Type = GH_ObjectEventType.Enabled });
+            }
+        }
+        public int RefreshCount;
+        public void ScheduleOutputRefresh() { RefreshCount++; }
+    }
+}
 namespace Rhino { public static class RhinoApp { public static void WriteLine(string s) { } } }
