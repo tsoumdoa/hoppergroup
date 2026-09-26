@@ -6,9 +6,9 @@ aectooling by tomoS
 
 ## Features
 
-- Adds dragged objects to the innermost Grasshopper group whose visual boundary contains the object center.
+- Adds moved or newly placed objects to the innermost Grasshopper group whose visual boundary contains the object center.
 - Removes objects from a group only after the object center leaves that group beyond the configured exit buffer.
-- Repairs nested groups by making the smallest contained group a direct child of the next larger containing group.
+- Keeps a carried group's members together, and repairs nested groups when a group moves or Refresh is used.
 - Provides manual refresh and optional debug logging.
 - Marks cached group regions dirty when groups are created or deleted.
 
@@ -34,7 +34,7 @@ The component is available under `Params > Util > Hopper Group`.
 ### Inputs
 
 - `Enabled`: turns the automation on or off. Default: `true`.
-- `Exit Scale`: multiplier for the dragged selection footprint used as the removal buffer. Default: `1`.
+- `Exit Scale`: multiplier for each moved object's size used as its removal buffer. Default: `1`.
 - `Refresh`: toggle to rescan all groups and repair membership for every canvas object.
 - `Debug`: writes debug messages to Rhino command history and the `Log` output.
 
@@ -91,7 +91,9 @@ Close Rhino before rebuilding if the plugin is loaded. Public Yak package versio
 
 ## Development Notes
 
-Membership is tested using each object's canvas-space center point. For drag removal, a single component uses its own bounding box as the exit buffer; multiple selected components use the combined selection bounding box. Group hierarchy is based on complete rectangle containment: a smaller group becomes a child of the smallest larger group whose cached bounds fully contain it.
+Membership is tested using each object's canvas-space center point. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. Clicking without moving objects does not change membership. Group hierarchy is based on complete rectangle containment: a smaller group becomes a child of the smallest larger group whose cached bounds fully contain it.
+
+Moves made outside a canvas drag, such as keyboard or script repositioning, are applied on the next manual `Refresh`.
 
 ## License
 
