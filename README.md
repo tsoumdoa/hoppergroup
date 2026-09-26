@@ -93,7 +93,15 @@ Close Rhino before rebuilding if the plugin is loaded. Public Yak package versio
 
 Membership is tested using each object's canvas-space center point. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. Clicking without moving objects does not change membership. Group hierarchy is based on complete rectangle containment: a smaller group becomes a child of the smallest larger group whose cached bounds fully contain it.
 
-Moves made outside a canvas drag, such as keyboard or script repositioning, are applied on the next manual `Refresh`.
+Moves made outside a canvas drag, such as keyboard or script repositioning, are reconciled on the next manual `Refresh` or actual canvas move/drop. Groups whose members all translate together keep their membership. Clicking without moving anything leaves pending moves untouched.
+
+Run the isolated membership regression checks with the .NET 10 SDK:
+
+```bash
+dotnet run --project tests/HopperGroup.RegressionTests -c Release
+```
+
+These checks compile the production manager against a simulated canvas, group geometry, and undo-record server. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
 
 ## License
 

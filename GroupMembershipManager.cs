@@ -17,6 +17,8 @@ namespace HopperGroup
         private readonly Dictionary<Guid, Guid> _parentByChild = new Dictionary<Guid, Guid>();
         private readonly Dictionary<Guid, PointF> _positionsAtMouseDown = new Dictionary<Guid, PointF>();
         private readonly Dictionary<Guid, RectangleF> _groupBoundsAtMouseDown = new Dictionary<Guid, RectangleF>();
+        private readonly Dictionary<Guid, RectangleF> _settledGroupBounds = new Dictionary<Guid, RectangleF>();
+        private readonly Dictionary<Guid, PointF> _settledObjectCenters = new Dictionary<Guid, PointF>();
         private readonly HashSet<Guid> _addedObjectIds = new HashSet<Guid>();
         private readonly StringBuilder _debugLog = new StringBuilder();
         private HopperGroupComponent _owner;
@@ -27,7 +29,9 @@ namespace HopperGroup
         private bool _cacheDirty = true;
         private bool _handlingDrop;
         private bool _hasMouseDownSnapshot;
+        private bool _hasSettledLayout;
         private Point _mouseDownLocation;
+        private int _undoCountAtMouseDown;
         private float _exitScale = 1f;
 
         public string Status { get; private set; } = "Ready";
@@ -48,6 +52,7 @@ namespace HopperGroup
             {
                 UnsubscribeDocument();
                 ClearDragState();
+                ClearSettledLayout();
                 _document = document;
                 SubscribeDocument();
                 _cacheDirty = true;
@@ -57,6 +62,10 @@ namespace HopperGroup
             {
                 WireCanvas();
                 RebuildCacheIfNeeded();
+                if (!_hasSettledLayout)
+                {
+                    RememberSettledLayout();
+                }
                 if (!wasEnabled || documentChanged)
                 {
                     Status = $"Enabled - cached {_groups.Count} group region(s)";
@@ -66,6 +75,7 @@ namespace HopperGroup
             {
                 UnwireCanvas();
                 ClearDragState();
+                ClearSettledLayout();
                 Status = "Disabled";
             }
         }
@@ -79,7 +89,8 @@ namespace HopperGroup
                 return;
             }
 
-            ProcessObjects(GetManagedObjects(_document.Objects), refreshCache: true, expireOwner: false, selectionContext: SelectionContext.Empty);
+            ProcessObjects(GetManagedObjects(_document.Objects), refreshCache: true, expireOwner: false,
+                selectionContext: SelectionContext.Empty, reconcileExternalMoves: true);
         }
 
         public void Dispose()
@@ -89,6 +100,7 @@ namespace HopperGroup
             _groups.Clear();
             _parentByChild.Clear();
             ClearDragState();
+            ClearSettledLayout();
             _owner = null;
             _document = null;
         }
@@ -159,6 +171,8 @@ namespace HopperGroup
             {
                 _addedObjectIds.Remove(obj.InstanceGuid);
                 _positionsAtMouseDown.Remove(obj.InstanceGuid);
+                _settledObjectCenters.Remove(obj.InstanceGuid);
+                _settledGroupBounds.Remove(obj.InstanceGuid);
             }
 
             OnObjectsChanged(e);
@@ -174,6 +188,7 @@ namespace HopperGroup
                 if (_enabled)
                 {
                     RebuildGroupCache();
+                    SyncSettledGroups();
                     Status = $"Enabled - cached {_groups.Count} group region(s)";
                     _owner?.ScheduleOutputRefresh();
                 }
@@ -202,6 +217,7 @@ namespace HopperGroup
 
             _hasMouseDownSnapshot = true;
             _mouseDownLocation = e.Location;
+            _undoCountAtMouseDown = _document.UndoServer.UndoCount;
             Log("Frozen group cache at drag start.");
         }
 
@@ -227,6 +243,15 @@ namespace HopperGroup
                     && _groupBoundsAtMouseDown.TryGetValue(group.Id, out var previous)
                     && GetCurrentGroupBounds(group.Group) != previous);
             var selectionContext = CreateSelectionContext(movedObjects, selectedGroups);
+            var nativeDragWasRecorded = _hasMouseDownSnapshot
+                && _document.UndoServer.UndoCount == _undoCountAtMouseDown + 1
+                && _document.UndoServer.UndoNames.FirstOrDefault() == "Drag";
+            var pendingExternalIds = new HashSet<Guid>(GetManagedObjects(_document.Objects)
+                .Where(obj => _settledObjectCenters.TryGetValue(obj.InstanceGuid, out var settled)
+                    && settled != (_positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var atMouseDown)
+                        ? atMouseDown
+                        : GetObjectCenter(obj)))
+                .Select(obj => obj.InstanceGuid));
             ClearDragState();
 
             if (movedObjects.Count == 0 && !groupMoved)
@@ -234,7 +259,9 @@ namespace HopperGroup
                 return;
             }
 
-            ProcessObjects(movedObjects, refreshCache: groupMoved, expireOwner: true, selectionContext: selectionContext);
+            ProcessObjects(movedObjects, refreshCache: groupMoved, expireOwner: true,
+                selectionContext: selectionContext, mergeWithNativeDrag: nativeDragWasRecorded,
+                reconcileExternalMoves: pendingExternalIds.Count > 0, externalObjectIds: pendingExternalIds);
         }
 
         private bool IsCurrentCanvasDocument()
@@ -248,6 +275,72 @@ namespace HopperGroup
             _groupBoundsAtMouseDown.Clear();
             _addedObjectIds.Clear();
             _hasMouseDownSnapshot = false;
+            _undoCountAtMouseDown = 0;
+        }
+
+        private void ClearSettledLayout()
+        {
+            _settledGroupBounds.Clear();
+            _settledObjectCenters.Clear();
+            _hasSettledLayout = false;
+        }
+
+        private void RememberSettledLayout()
+        {
+            _settledGroupBounds.Clear();
+            foreach (var group in _groups)
+            {
+                _settledGroupBounds[group.Id] = group.Bounds;
+            }
+
+            _settledObjectCenters.Clear();
+            foreach (var obj in GetManagedObjects(_document.Objects))
+            {
+                _settledObjectCenters[obj.InstanceGuid] = GetObjectCenter(obj);
+            }
+
+            _hasSettledLayout = true;
+        }
+
+        private void SyncSettledGroups()
+        {
+            if (!_hasSettledLayout)
+            {
+                return;
+            }
+
+            var currentIds = new HashSet<Guid>(_groups.Select(group => group.Id));
+            foreach (var missingId in _settledGroupBounds.Keys.Where(id => !currentIds.Contains(id)).ToList())
+            {
+                _settledGroupBounds.Remove(missingId);
+            }
+
+            foreach (var group in _groups)
+            {
+                if (!_settledGroupBounds.ContainsKey(group.Id))
+                {
+                    _settledGroupBounds[group.Id] = group.Bounds;
+                }
+            }
+        }
+
+        private void RestoreSettledGroupCache()
+        {
+            _groups.Clear();
+            foreach (var group in _document.Objects.OfType<GH_Group>())
+            {
+                if (_settledGroupBounds.TryGetValue(group.InstanceGuid, out var bounds))
+                {
+                    _groups.Add(new GroupRegion(group, bounds));
+                }
+                else if (TryCreateRegion(group, out var region))
+                {
+                    _groups.Add(region);
+                }
+            }
+
+            _groups.Sort((left, right) => left.Area.CompareTo(right.Area));
+            BuildDesiredGroupHierarchy();
         }
 
         private static RectangleF GetCurrentGroupBounds(GH_Group group)
@@ -256,7 +349,76 @@ namespace HopperGroup
             return group.Attributes?.Bounds ?? RectangleF.Empty;
         }
 
-        private void ProcessObjects(IList<IGH_DocumentObject> objects, bool refreshCache, bool expireOwner, SelectionContext selectionContext)
+        private SelectionContext CreateExternalMovementContext(HashSet<Guid> eligibleIds)
+        {
+            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var translations = new Dictionary<Guid, PointF?>();
+            var carriedIds = new HashSet<Guid>();
+            foreach (var group in _groups)
+            {
+                if (GetGroupTranslation(group.Group, eligibleIds, objectsById, translations,
+                    new HashSet<Guid>()).HasValue)
+                {
+                    carriedIds.Add(group.Id);
+                }
+            }
+
+            return new SelectionContext(carriedIds);
+        }
+
+        private PointF? GetGroupTranslation(GH_Group group, HashSet<Guid> eligibleIds,
+            Dictionary<Guid, IGH_DocumentObject> objectsById, Dictionary<Guid, PointF?> translations,
+            HashSet<Guid> visiting)
+        {
+            if (translations.TryGetValue(group.InstanceGuid, out var cached))
+            {
+                return cached;
+            }
+
+            if (!visiting.Add(group.InstanceGuid))
+            {
+                return null;
+            }
+
+            PointF? translation = null;
+            foreach (var id in group.ObjectIDs)
+            {
+                PointF? memberTranslation = null;
+                if (objectsById.TryGetValue(id, out var obj))
+                {
+                    if (obj is GH_Group child)
+                    {
+                        memberTranslation = GetGroupTranslation(child, eligibleIds, objectsById,
+                            translations, visiting);
+                    }
+                    else if (eligibleIds.Contains(id) && IsManagedObject(obj)
+                        && _settledObjectCenters.TryGetValue(id, out var previous))
+                    {
+                        var center = GetObjectCenter(obj);
+                        memberTranslation = new PointF(center.X - previous.X, center.Y - previous.Y);
+                    }
+                }
+
+                if (!memberTranslation.HasValue || memberTranslation.Value == PointF.Empty
+                    || (translation.HasValue
+                        && (Math.Abs(translation.Value.X - memberTranslation.Value.X) > 0.01f
+                            || Math.Abs(translation.Value.Y - memberTranslation.Value.Y) > 0.01f)))
+                {
+                    translation = null;
+                    break;
+                }
+
+                translation = memberTranslation;
+            }
+
+            visiting.Remove(group.InstanceGuid);
+            translations[group.InstanceGuid] = translation;
+            return translation;
+        }
+
+        private void ProcessObjects(IList<IGH_DocumentObject> objects, bool refreshCache, bool expireOwner,
+            SelectionContext selectionContext, bool mergeWithNativeDrag = false, bool reconcileExternalMoves = false,
+            HashSet<Guid> externalObjectIds = null)
         {
             if (_handlingDrop || _document == null)
             {
@@ -267,6 +429,48 @@ namespace HopperGroup
             {
                 _handlingDrop = true;
                 LastChangeCount = 0;
+                var undoCountBeforeProcessing = _document.UndoServer.UndoCount;
+                var recordedGroups = new HashSet<Guid>();
+                var processedIds = new HashSet<Guid>(objects.Select(obj => obj.InstanceGuid));
+                selectionContext = selectionContext ?? SelectionContext.Empty;
+
+                if (reconcileExternalMoves && _hasSettledLayout)
+                {
+                    var externallyMoved = GetManagedObjects(_document.Objects)
+                        .Where(obj => _settledObjectCenters.TryGetValue(obj.InstanceGuid, out var previous)
+                            && previous != GetObjectCenter(obj))
+                        .ToList();
+
+                    if (externallyMoved.Count > 0)
+                    {
+                        RestoreSettledGroupCache();
+                        var movedIds = new HashSet<Guid>(externallyMoved.Select(obj => obj.InstanceGuid));
+                        processedIds.UnionWith(movedIds);
+                        var externalContext = CreateExternalMovementContext(externalObjectIds ?? movedIds);
+                        var combinedContext = new SelectionContext(new HashSet<Guid>(_groups
+                            .Where(group => selectionContext.IsCarriedGroup(group.Id)
+                                || externalContext.IsCarriedGroup(group.Id))
+                            .Select(group => group.Id)));
+                        var boundsBeforeMove = _groups.ToDictionary(group => group.Id, group => group.Bounds);
+                        foreach (var obj in externallyMoved)
+                        {
+                            LastChangeCount += UpdateObjectMembership(obj, recordedGroups, combinedContext);
+                        }
+
+                        RebuildGroupCache();
+                        if (combinedContext.HasCarriedGroups)
+                        {
+                            BuildDesiredGroupHierarchy(boundsBeforeMove, combinedContext);
+                            LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
+                            RebuildGroupCache();
+                        }
+
+                        // These objects were reconciled against their original boundaries. A second
+                        // pass against expanded groups could immediately undo that decision.
+                        objects = objects.Where(obj => !movedIds.Contains(obj.InstanceGuid)).ToList();
+                        selectionContext = SelectionContext.Empty;
+                    }
+                }
 
                 if (refreshCache)
                 {
@@ -277,8 +481,6 @@ namespace HopperGroup
                     RebuildCacheIfNeeded();
                 }
 
-                var recordedGroups = new HashSet<Guid>();
-                selectionContext = selectionContext ?? SelectionContext.Empty;
                 var boundsBeforeCarriedGroupMove = selectionContext.HasCarriedGroups
                     ? _groups.ToDictionary(group => group.Id, group => group.Bounds)
                     : null;
@@ -300,6 +502,17 @@ namespace HopperGroup
                     LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
                     RebuildGroupCache();
                 }
+                else
+                {
+                    RebuildGroupCache();
+                    if (refreshCache)
+                    {
+                        LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
+                        RebuildGroupCache();
+                    }
+                }
+
+                RememberSettledLayout();
 
                 if (LastChangeCount > 0)
                 {
@@ -307,8 +520,14 @@ namespace HopperGroup
                     Instances.InvalidateCanvas();
                 }
 
+                if (recordedGroups.Count > 0
+                    && _document.UndoServer.UndoCount - undoCountBeforeProcessing == recordedGroups.Count)
+                {
+                    _document.UndoUtil.MergeRecords(recordedGroups.Count + (mergeWithNativeDrag ? 1 : 0));
+                }
+
                 Status = $"Enabled - cached {_groups.Count} group region(s), {LastChangeCount} change(s)";
-                Log($"Processed {objects.Count} object(s), {LastChangeCount} membership change(s).");
+                Log($"Processed {processedIds.Count} object(s), {LastChangeCount} membership change(s).");
             }
             finally
             {
@@ -557,7 +776,7 @@ namespace HopperGroup
             }
 
             var center = GetObjectCenter(obj);
-            var target = FindInnermostContainingGroup(center);
+            var target = FindInnermostContainingGroup(center, selectionContext);
             var currentGroups = _groups
                 .Where(region => region.Group.ObjectIDs.Contains(obj.InstanceGuid))
                 .ToList();
@@ -616,9 +835,21 @@ namespace HopperGroup
             return changes;
         }
 
-        private GroupRegion FindInnermostContainingGroup(PointF point)
+        private GroupRegion FindInnermostContainingGroup(PointF point, SelectionContext selectionContext)
         {
-            return _groups.FirstOrDefault(region => region.Bounds.Contains(point));
+            if (!selectionContext.HasCarriedGroups)
+            {
+                return _groups.FirstOrDefault(region => region.Bounds.Contains(point));
+            }
+
+            // A carried group receives new members at its destination, not its old footprint.
+            return _groups
+                .Select(region => selectionContext.IsCarriedGroup(region.Id)
+                    ? new GroupRegion(region.Group, GetCurrentGroupBounds(region.Group))
+                    : region)
+                .Where(region => region.Bounds.Contains(point))
+                .OrderBy(region => region.Area)
+                .FirstOrDefault();
         }
 
         private bool IsAncestor(Guid possibleAncestor, Guid child)
