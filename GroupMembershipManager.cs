@@ -164,14 +164,16 @@ namespace HopperGroup
             }
 
             WireCanvas();
-            var selectedObjects = GetManagedObjects(_document.SelectedObjects());
+            var selection = _document.SelectedObjects();
+            var selectedGroups = new HashSet<Guid>(selection.OfType<GH_Group>().Select(group => group.InstanceGuid));
+            var selectedObjects = GetManagedObjects(selection);
             if (selectedObjects.Count == 0 && _owner != null)
             {
                 selectedObjects.Add(_owner);
             }
 
             RebuildCacheIfNeeded();
-            var selectionContext = CreateSelectionContext(selectedObjects);
+            var selectionContext = CreateSelectionContext(selectedObjects, selectedGroups);
             ProcessObjects(selectedObjects, GetCombinedBounds(selectedObjects), refreshCache: false, expireOwner: true, selectionContext: selectionContext);
         }
 
@@ -348,9 +350,9 @@ namespace HopperGroup
             return changes;
         }
 
-        private SelectionContext CreateSelectionContext(IList<IGH_DocumentObject> selectedObjects)
+        private SelectionContext CreateSelectionContext(IList<IGH_DocumentObject> selectedObjects, HashSet<Guid> selectedGroups)
         {
-            if (selectedObjects == null || selectedObjects.Count == 0)
+            if (selectedObjects == null || selectedObjects.Count == 0 || selectedGroups.Count == 0)
             {
                 return SelectionContext.Empty;
             }
@@ -360,18 +362,45 @@ namespace HopperGroup
             var carriedGroupIds = new HashSet<Guid>();
             var completeGroups = new Dictionary<Guid, bool>();
 
+            // Selecting every member does not mean the group itself was dragged.
             foreach (var group in _groups)
             {
-                if (IsCompleteSelectedGroup(group.Group, selectedIds, objectsById, completeGroups, new HashSet<Guid>()))
+                if (selectedGroups.Contains(group.Id))
                 {
-                    carriedGroupIds.Add(group.Id);
-                    Log($"Preserving carried group {group.Id}.");
+                    CollectCarriedGroups(group.Group, selectedIds, objectsById, completeGroups, carriedGroupIds);
                 }
+            }
+
+            foreach (var groupId in carriedGroupIds)
+            {
+                Log($"Preserving carried group {groupId}.");
             }
 
             return carriedGroupIds.Count == 0
                 ? SelectionContext.Empty
                 : new SelectionContext(carriedGroupIds);
+        }
+
+        private static void CollectCarriedGroups(
+            GH_Group group,
+            HashSet<Guid> selectedIds,
+            Dictionary<Guid, IGH_DocumentObject> objectsById,
+            Dictionary<Guid, bool> completeGroups,
+            HashSet<Guid> carriedGroupIds)
+        {
+            if (!IsCompleteSelectedGroup(group, selectedIds, objectsById, completeGroups, new HashSet<Guid>())
+                || !carriedGroupIds.Add(group.InstanceGuid))
+            {
+                return;
+            }
+
+            foreach (var objectId in group.ObjectIDs)
+            {
+                if (objectsById.TryGetValue(objectId, out var obj) && obj is GH_Group childGroup)
+                {
+                    CollectCarriedGroups(childGroup, selectedIds, objectsById, completeGroups, carriedGroupIds);
+                }
+            }
         }
 
         private static bool IsCompleteSelectedGroup(
