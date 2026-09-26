@@ -20,6 +20,7 @@ namespace HopperGroup
         private readonly Dictionary<Guid, RectangleF> _settledGroupBounds = new Dictionary<Guid, RectangleF>();
         private readonly Dictionary<Guid, HashSet<Guid>> _settledGroupMembers = new Dictionary<Guid, HashSet<Guid>>();
         private readonly Dictionary<Guid, PointF> _settledObjectCenters = new Dictionary<Guid, PointF>();
+        private readonly HashSet<Guid> _newObjectIdsSinceSettled = new HashSet<Guid>();
         private readonly HashSet<Guid> _addedObjectIds = new HashSet<Guid>();
         private readonly StringBuilder _debugLog = new StringBuilder();
         private HopperGroupComponent _owner;
@@ -223,6 +224,11 @@ namespace HopperGroup
             foreach (var obj in e.Objects.Where(obj => obj != null && !(obj is GH_Group)))
             {
                 _addedObjectIds.Add(obj.InstanceGuid);
+                if (_hasSettledLayout && IsManagedObject(obj))
+                {
+                    _settledObjectCenters[obj.InstanceGuid] = GetObjectCenter(obj);
+                    _newObjectIdsSinceSettled.Add(obj.InstanceGuid);
+                }
             }
 
             OnObjectsChanged(e);
@@ -240,6 +246,7 @@ namespace HopperGroup
                 _addedObjectIds.Remove(obj.InstanceGuid);
                 _positionsAtMouseDown.Remove(obj.InstanceGuid);
                 _settledObjectCenters.Remove(obj.InstanceGuid);
+                _newObjectIdsSinceSettled.Remove(obj.InstanceGuid);
                 _settledGroupBounds.Remove(obj.InstanceGuid);
                 _settledGroupMembers.Remove(obj.InstanceGuid);
             }
@@ -356,6 +363,7 @@ namespace HopperGroup
             _settledGroupBounds.Clear();
             _settledGroupMembers.Clear();
             _settledObjectCenters.Clear();
+            _newObjectIdsSinceSettled.Clear();
             _hasSettledLayout = false;
         }
 
@@ -375,6 +383,7 @@ namespace HopperGroup
                 _settledObjectCenters[obj.InstanceGuid] = GetObjectCenter(obj);
             }
 
+            _newObjectIdsSinceSettled.Clear();
             _hasSettledLayout = true;
         }
 
@@ -402,7 +411,7 @@ namespace HopperGroup
             }
         }
 
-        private void RestoreSettledGroupCache()
+        private void RestoreSettledGroupCache(SelectionContext externalContext)
         {
             _groups.Clear();
             var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
@@ -410,7 +419,8 @@ namespace HopperGroup
             var changedGroups = new HashSet<Guid>();
             foreach (var group in _document.Objects.OfType<GH_Group>())
             {
-                var bounds = GetSettledGroupBounds(group, objectsById, boundsById, changedGroups, new HashSet<Guid>());
+                var bounds = GetSettledGroupBounds(group, objectsById, boundsById, changedGroups,
+                    new HashSet<Guid>(), externalContext);
                 if (bounds.Width > 0f && bounds.Height > 0f)
                 {
                     _groups.Add(new GroupRegion(group, bounds));
@@ -423,7 +433,7 @@ namespace HopperGroup
 
         private RectangleF GetSettledGroupBounds(GH_Group group,
             Dictionary<Guid, IGH_DocumentObject> objectsById, Dictionary<Guid, RectangleF> boundsById,
-            HashSet<Guid> changedGroups, HashSet<Guid> visiting)
+            HashSet<Guid> changedGroups, HashSet<Guid> visiting, SelectionContext externalContext)
         {
             var id = group.InstanceGuid;
             if (boundsById.TryGetValue(id, out var cached))
@@ -450,14 +460,16 @@ namespace HopperGroup
                 var settled = current;
                 if (member is GH_Group childGroup)
                 {
-                    var childBounds = GetSettledGroupBounds(childGroup, objectsById, boundsById, changedGroups, visiting);
+                    var childBounds = GetSettledGroupBounds(childGroup, objectsById, boundsById,
+                        changedGroups, visiting, externalContext);
                     changed |= changedGroups.Contains(memberId);
                     if (previousMembers != null && previousMembers.Contains(memberId))
                     {
                         settled = childBounds;
                     }
                 }
-                else if (previousMembers != null && previousMembers.Contains(memberId)
+                else if (((previousMembers != null && previousMembers.Contains(memberId))
+                        || UseAddedMemberCenter(id, memberId, externalContext))
                     && _settledObjectCenters.TryGetValue(memberId, out var center))
                 {
                     settled.Offset(center.X - (current.Left + current.Width * 0.5f),
@@ -503,6 +515,22 @@ namespace HopperGroup
             return bounds;
         }
 
+        private bool UseAddedMemberCenter(Guid groupId, Guid memberId, SelectionContext externalContext)
+        {
+            if (!_newObjectIdsSinceSettled.Contains(memberId))
+            {
+                return false;
+            }
+
+            // A new member placed inside the old region, or carried with the whole group,
+            // belongs to the pre-move outline. An object added to a group after moving
+            // from outside that region contributes at its current position instead.
+            return externalContext.IsCarriedGroup(groupId)
+                || (_settledGroupBounds.TryGetValue(groupId, out var bounds)
+                    && _settledObjectCenters.TryGetValue(memberId, out var center)
+                    && bounds.Contains(center));
+        }
+
         private static RectangleF GetCurrentGroupBounds(GH_Group group)
         {
             group.ExpireCaches();
@@ -514,12 +542,12 @@ namespace HopperGroup
             var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
             var translations = new Dictionary<Guid, PointF?>();
             var carriedIds = new HashSet<Guid>();
-            foreach (var group in _groups)
+            foreach (var group in _document.Objects.OfType<GH_Group>())
             {
-                if (GetGroupTranslation(group.Group, eligibleIds, objectsById, translations,
+                if (GetGroupTranslation(group, eligibleIds, objectsById, translations,
                     new HashSet<Guid>(), snapshot).HasValue)
                 {
-                    carriedIds.Add(group.Id);
+                    carriedIds.Add(group.InstanceGuid);
                 }
             }
 
@@ -606,11 +634,11 @@ namespace HopperGroup
 
                     if (externallyMoved.Count > 0)
                     {
-                        RestoreSettledGroupCache();
                         var nativeMovedIds = new HashSet<Guid>(objects.Select(obj => obj.InstanceGuid));
                         var movedIds = new HashSet<Guid>(externallyMoved.Select(obj => obj.InstanceGuid));
                         processedIds.UnionWith(movedIds);
                         var externalContext = CreateExternalMovementContext(externalObjectIds ?? movedIds, externalSnapshot);
+                        RestoreSettledGroupCache(externalContext);
                         if (externalSnapshot != null)
                         {
                             // A coherent translation before mouse-down establishes the boundary

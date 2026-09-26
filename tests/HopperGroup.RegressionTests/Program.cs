@@ -433,6 +433,143 @@ class Program
             m.RefreshAllObjects();
             Assert(g.ObjectIDs.Count == 3 && d.UndoServer.UndoCount == 0, "manual addition kept a stale boundary");
         });
+        Check("New manual member joins a coherent external group move", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var added = new Obj(30);
+            d.Add(added);
+            g.AddObject(added.InstanceGuid);
+            a.Move(500); b.Move(500); added.Move(500);
+            c.Down(); c.Up();
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3,
+                "coherent move lost a group member added since the last settled layout");
+        });
+        Check("New object moved before manual grouping keeps its current position", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var added = new Obj(1000);
+            d.Add(added);
+            added.Move(-500);
+            g.AddObject(added.InstanceGuid);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3,
+                "Refresh undid a manual addition made after the object moved");
+        });
+        Check("New nested member moves with its child and parent groups", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(a.InstanceGuid);
+            d.Add(child);
+            g.RemoveObject(a.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            var added = new Obj(30);
+            d.Add(added);
+            child.AddObject(added.InstanceGuid);
+            a.Move(500); b.Move(500); added.Move(500);
+            m.RefreshAllObjects();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
+                && child.ObjectIDs.Count == 2 && g.ObjectIDs.Contains(child.InstanceGuid)
+                && g.ObjectIDs.Contains(b.InstanceGuid) && g.ObjectIDs.Count == 2,
+                "coherent nested move lost a member or parent-child relationship");
+        });
+        Check("New nested member leaves parent with its child group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(a.InstanceGuid);
+            d.Add(child);
+            g.RemoveObject(a.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            var added = new Obj(30);
+            d.Add(added);
+            child.AddObject(added.InstanceGuid);
+            a.Move(500); added.Move(500);
+            m.RefreshAllObjects();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
+                && child.ObjectIDs.Count == 2 && !g.ObjectIDs.Contains(child.InstanceGuid)
+                && g.ObjectIDs.Contains(b.InstanceGuid),
+                "moving the nested child away damaged its members or retained the old parent");
+        });
+        Check("New nested member stays with child dragged after an external parent move", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(a.InstanceGuid);
+            d.Add(child);
+            g.RemoveObject(a.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            var added = new Obj(30);
+            d.Add(added);
+            child.AddObject(added.InstanceGuid);
+            a.Move(500); b.Move(500); added.Move(500);
+            d.Selection.Add(child);
+            c.Down();
+            a.Move(500); added.Move(500);
+            c.Up();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
+                && child.ObjectIDs.Count == 2 && !g.ObjectIDs.Contains(child.InstanceGuid)
+                && g.ObjectIDs.Contains(b.InstanceGuid),
+                "native child drag after external parent movement damaged nested membership");
+        });
+        Check("New member leaving an inner group does not absorb stationary ancestors", () =>
+        {
+            var d = new GH_Document();
+            var innerMember = new Obj(0);
+            var middleMember = new Obj(60);
+            var outerMember = new Obj(120);
+            var inner = new GH_Group(d);
+            var middle = new GH_Group(d);
+            var outer = new GH_Group(d);
+            d.Objects.AddRange(new IGH_DocumentObject[]
+                { innerMember, middleMember, outerMember, inner, middle, outer });
+            inner.AddObject(innerMember.InstanceGuid);
+            middle.AddObject(inner.InstanceGuid);
+            middle.AddObject(middleMember.InstanceGuid);
+            outer.AddObject(middle.InstanceGuid);
+            outer.AddObject(outerMember.InstanceGuid);
+            var canvas = new GH_Canvas { Document = d };
+            Grasshopper.Instances.ActiveCanvas = canvas;
+            var manager = new GroupMembershipManager();
+            manager.Configure(null, d, true, 1, false);
+            var added = new Obj(10);
+            d.Add(added);
+            inner.AddObject(added.InstanceGuid);
+            added.Move(500);
+            manager.RefreshAllObjects();
+            Assert(!inner.ObjectIDs.Contains(added.InstanceGuid)
+                && inner.ObjectIDs.Contains(innerMember.InstanceGuid)
+                && middle.ObjectIDs.Contains(inner.InstanceGuid)
+                && middle.ObjectIDs.Contains(middleMember.InstanceGuid)
+                && outer.ObjectIDs.Contains(middle.InstanceGuid)
+                && outer.ObjectIDs.Contains(outerMember.InstanceGuid),
+                "moving one new inner member changed stationary nested memberships");
+        });
+        Check("New object moved before joining a nested child stays in that child", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(a.InstanceGuid);
+            d.Add(child);
+            g.RemoveObject(a.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            var added = new Obj(1000);
+            d.Add(added);
+            added.Move(-500);
+            child.AddObject(added.InstanceGuid);
+            m.RefreshAllObjects();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
+                && child.ObjectIDs.Contains(b.InstanceGuid) && g.ObjectIDs.Contains(child.InstanceGuid)
+                && !g.ObjectIDs.Contains(b.InstanceGuid),
+                "Refresh undid a nested manual addition or left a member outside its innermost group");
+        });
         Check("Manual addition still allows an external member to leave the enlarged group", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
