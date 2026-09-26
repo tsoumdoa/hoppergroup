@@ -315,6 +315,102 @@ class Program
             m.RefreshAllObjects();
             Assert(g.ObjectIDs.Count == 3 && g.ObjectIDs.Contains(o.InstanceGuid), "destination did not receive moved object");
         });
+        Check("Undo-restored membership survives Refresh", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a);
+            c.Down();
+            d.UndoServer.UndoNames.Insert(0, "Drag");
+            a.Move(500);
+            c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "setup drag failed");
+            a.Move(-500);
+            g.AddObject(a.InstanceGuid);
+            d.UndoServer.UndoNames.Clear();
+            d.RaiseUndoStateChanged(GH_UndoOperation.Undo);
+            m.Configure(null, d, true, 1, false);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid), "Refresh removed the restored member");
+            Assert(m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0, "Refresh recorded a new edit after Undo");
+        });
+        Check("Undo-restored membership survives an unrelated drag", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a);
+            c.Down(); a.Move(500); c.Up();
+            a.Move(-500);
+            g.AddObject(a.InstanceGuid);
+            d.RaiseUndoStateChanged(GH_UndoOperation.Undo);
+            c.Down(); o.Move(10); c.Up();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid), "unrelated drag removed the restored member");
+        });
+        Check("Redo resets the boundary before a later member drag", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a);
+            c.Down(); a.Move(500); c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "setup drag failed");
+            a.Move(-500);
+            g.AddObject(a.InstanceGuid);
+            d.RaiseUndoStateChanged(GH_UndoOperation.Undo);
+            a.Move(500);
+            g.RemoveObject(a.InstanceGuid);
+            d.RaiseUndoStateChanged(GH_UndoOperation.Redo);
+            d.Selection.Clear();
+            d.Selection.Add(b);
+            c.Down(); b.Move(-50); c.Up();
+            Assert(g.ObjectIDs.Count == 0, "member was retained by the group's pre-Redo boundary");
+        });
+        Check("Undo stack notifications preserve pending external movement", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            a.Move(500);
+            d.RaiseUndoStateChanged(GH_UndoOperation.RecordAdded);
+            d.RaiseUndoStateChanged(GH_UndoOperation.ClearRedoStack);
+            m.RefreshAllObjects();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "stack notification erased pending movement");
+        });
+        Check("External group translation followed by a small member drag keeps both members", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            a.Move(500); b.Move(500);
+            d.Selection.Add(a);
+            c.Down(); a.Move(5); c.Up();
+            Assert(g.ObjectIDs.Count == 2, "small member drag emptied the translated group");
+        });
+        Check("External group translation followed by a large member drag releases only that member", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            a.Move(500); b.Move(500);
+            d.Selection.Add(a);
+            c.Down(); a.Move(500); c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid),
+                "native drag did not use the translated boundary");
+        });
+        Check("Dragging a translated member back to its settled position still releases it", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            a.Move(500); b.Move(500);
+            d.Selection.Add(a);
+            c.Down(); a.Move(-500); c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid),
+                "returning to an old position bypassed reconciliation");
+        });
+        Check("Native child drag escapes an externally translated parent", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            d.Add(child);
+            child.AddObject(a.InstanceGuid);
+            g.RemoveObject(a.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            a.Move(500); b.Move(500);
+            d.Selection.Add(child);
+            c.Down(); a.Move(500); c.Up();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && !g.ObjectIDs.Contains(child.InstanceGuid), "translated parent stretched around the native child drag");
+        });
         Console.WriteLine("Failed: " + failures);
         Environment.ExitCode = failures == 0 ? 0 : 1;
     }

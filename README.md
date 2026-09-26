@@ -95,13 +95,15 @@ Membership is tested using each object's canvas-space center point. Each object 
 
 Moves made outside a canvas drag, such as keyboard or script repositioning, are reconciled on the next manual `Refresh` or actual canvas move/drop. Groups whose members all translate together keep their membership. Clicking without moving anything leaves pending moves untouched.
 
+When an external group move is followed by a member drag, the drag uses the group's translated boundary at mouse-down. Individual members can still leave that boundary. Completed Undo and Redo operations reset the stored layout so later movement or Refresh preserves the restored memberships.
+
 Run the isolated membership regression checks with the .NET 10 SDK:
 
 ```bash
 dotnet run --project tests/HopperGroup.RegressionTests -c Release
 ```
 
-These checks compile the production manager against a simulated canvas, group geometry, and undo-record server. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
+These checks compile the production manager against a simulated canvas, group geometry, undo-record server, and completed undo/redo notifications. Undo/redo scenarios restore positions and memberships explicitly before raising the host event. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
 
 ## License
 

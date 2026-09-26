@@ -102,6 +102,11 @@ namespace Grasshopper.Kernel
     {
         public List<IGH_DocumentObject> Objects = new();
     }
+    public enum GH_UndoOperation { ClearUndoStack, ClearRedoStack, RecordAdded, RecordRemoved, Undo, Redo }
+    public class GH_DocUndoEventArgs : EventArgs
+    {
+        public GH_UndoOperation Operation;
+    }
     public class UndoServer
     {
         public List<string> UndoNames = new();
@@ -131,6 +136,10 @@ namespace Grasshopper.Kernel
         }
         public bool IsModified;
         public event EventHandler<GH_DocObjectEventArgs> ObjectsAdded, ObjectsDeleted;
+        public event EventHandler<GH_DocUndoEventArgs> UndoStateChanged;
+        // Tests restore the recorded layout first, matching the host's completed Undo/Redo event.
+        public void RaiseUndoStateChanged(GH_UndoOperation operation) =>
+            UndoStateChanged?.Invoke(this, new GH_DocUndoEventArgs { Operation = operation });
         public List<IGH_DocumentObject> SelectedObjects() => Selection;
         public void Add(IGH_DocumentObject obj)
         {
