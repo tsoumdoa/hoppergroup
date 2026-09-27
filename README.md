@@ -101,6 +101,8 @@ Disabling the component, either through `Enabled` or Grasshopper's Disable comma
 
 Manual additions and removals update the boundaries used for pending external moves, including nested groups. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history.
 
+When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Refresh after a manual addition establishes the boundary for later individual moves.
+
 Run the isolated membership regression checks with the .NET 10 SDK:
 
 ```bash

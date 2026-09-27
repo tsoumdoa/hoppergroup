@@ -468,8 +468,12 @@ namespace HopperGroup
                         settled = childBounds;
                     }
                 }
+                // For a new member, use its add-time center only when the whole group
+                // translated. Otherwise preserve the manual membership at its current
+                // position; Grasshopper does not report when that membership was edited.
                 else if (((previousMembers != null && previousMembers.Contains(memberId))
-                        || UseAddedMemberCenter(id, memberId, externalContext))
+                        || (_newObjectIdsSinceSettled.Contains(memberId)
+                            && externalContext.IsCarriedGroup(id)))
                     && _settledObjectCenters.TryGetValue(memberId, out var center))
                 {
                     settled.Offset(center.X - (current.Left + current.Width * 0.5f),
@@ -513,22 +517,6 @@ namespace HopperGroup
             visiting.Remove(id);
             boundsById[id] = bounds;
             return bounds;
-        }
-
-        private bool UseAddedMemberCenter(Guid groupId, Guid memberId, SelectionContext externalContext)
-        {
-            if (!_newObjectIdsSinceSettled.Contains(memberId))
-            {
-                return false;
-            }
-
-            // A new member placed inside the old region, or carried with the whole group,
-            // belongs to the pre-move outline. An object added to a group after moving
-            // from outside that region contributes at its current position instead.
-            return externalContext.IsCarriedGroup(groupId)
-                || (_settledGroupBounds.TryGetValue(groupId, out var bounds)
-                    && _settledObjectCenters.TryGetValue(memberId, out var center)
-                    && bounds.Contains(center));
         }
 
         private static RectangleF GetCurrentGroupBounds(GH_Group group)

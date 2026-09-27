@@ -449,9 +449,9 @@ class Program
         Check("New object moved before manual grouping keeps its current position", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
-            var added = new Obj(1000);
+            var added = new Obj(10);
             d.Add(added);
-            added.Move(-500);
+            added.Move(500);
             g.AddObject(added.InstanceGuid);
             m.RefreshAllObjects();
             Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
@@ -541,6 +541,7 @@ class Program
             var added = new Obj(10);
             d.Add(added);
             inner.AddObject(added.InstanceGuid);
+            manager.RefreshAllObjects();
             added.Move(500);
             manager.RefreshAllObjects();
             Assert(!inner.ObjectIDs.Contains(added.InstanceGuid)
@@ -560,9 +561,9 @@ class Program
             g.RemoveObject(a.InstanceGuid);
             g.AddObject(child.InstanceGuid);
             m.RefreshAllObjects();
-            var added = new Obj(1000);
+            var added = new Obj(10);
             d.Add(added);
-            added.Move(-500);
+            added.Move(500);
             child.AddObject(added.InstanceGuid);
             m.RefreshAllObjects();
             Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
