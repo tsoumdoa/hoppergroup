@@ -25,6 +25,7 @@
   
   <ItemGroup>
     <None Remove="nul" />
+    <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
   
   <ItemGroup>

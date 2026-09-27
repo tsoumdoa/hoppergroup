@@ -26,7 +26,7 @@ namespace HopperGroup
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddBooleanParameter("Enabled", "Enabled", "Enable automatic group membership updates.", GH_ParamAccess.item, true);
-            pManager.AddNumberParameter("Exit Scale", "Exit", "Selection-size multiplier outside a group before an object is removed from it.", GH_ParamAccess.item, _exitScale);
+            pManager.AddNumberParameter("Exit Scale", "Exit", "Object-size multiplier outside a group before that object is removed from it.", GH_ParamAccess.item, _exitScale);
             pManager.AddBooleanParameter("Refresh", "Refresh", "Toggle to rescan all groups and repair memberships for all objects.", GH_ParamAccess.item, false);
             pManager.AddBooleanParameter("Debug", "Debug", "Enable debug logging.", GH_ParamAccess.item, false);
         }

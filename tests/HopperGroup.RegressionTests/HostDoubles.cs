@@ -1,0 +1,213 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Linq;
+using Grasshopper.Kernel;
+using Grasshopper.Kernel.Special;
+using Grasshopper.GUI.Canvas;
+using HopperGroup;
+
+// Minimal host doubles. Group rectangles follow member rectangles, as in Grasshopper.
+// These tests exercise the unchanged manager source, not a replacement algorithm.
+namespace System.Windows.Forms
+{
+    public enum MouseButtons { Left, Right }
+    public class MouseEventArgs : EventArgs
+    {
+        public MouseButtons Button
+        {
+            get;
+            set;
+        } = MouseButtons.Left;
+        public Point Location
+        {
+            get;
+            set;
+        }
+    }
+}
+namespace Grasshopper
+{
+    public static class Instances
+    {
+        public static GH_Canvas ActiveCanvas;
+        public static void InvalidateCanvas() { }
+    }
+}
+namespace Grasshopper.GUI.Canvas
+{
+    public class GH_Canvas
+    {
+        public GH_Document Document;
+        public event EventHandler<System.Windows.Forms.MouseEventArgs> MouseDown, MouseUp;
+        public int HandlerCount => (MouseDown?.GetInvocationList().Length ?? 0) + (MouseUp?.GetInvocationList().Length ?? 0);
+        public void Down() => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
+        public void Up() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(100, 0) });
+    }
+}
+namespace Grasshopper.Kernel
+{
+    public class Attributes
+    {
+        private RectangleF bounds;
+        public Func<RectangleF> Compute;
+        public RectangleF Bounds
+        {
+            get => Compute == null ? bounds : Compute();
+            set => bounds = value;
+        }
+    }
+    public interface IGH_DocumentObject
+    {
+        Guid InstanceGuid
+        {
+            get;
+        }
+        Attributes Attributes
+        {
+            get;
+        }
+        string Name
+        {
+            get;
+        }
+        string NickName
+        {
+            get;
+        }
+    }
+    public class Obj : IGH_DocumentObject
+    {
+        public Guid InstanceGuid
+        {
+            get;
+        } = Guid.NewGuid();
+        public Attributes Attributes
+        {
+            get;
+        } = new Attributes();
+        public string Name => "object";
+        public string NickName => Name;
+        public Obj(float x = 0, float y = 0)
+        {
+            Attributes.Bounds = new RectangleF(x, y, 10, 10);
+        }
+        public void Move(float dx)
+        {
+            var r = Attributes.Bounds;
+            r.Offset(dx, 0);
+            Attributes.Bounds = r;
+        }
+    }
+    public class GH_DocObjectEventArgs : EventArgs
+    {
+        public List<IGH_DocumentObject> Objects = new();
+    }
+    public enum GH_UndoOperation { ClearUndoStack, ClearRedoStack, RecordAdded, RecordRemoved, Undo, Redo }
+    public enum GH_ObjectEventType { Enabled }
+    public class GH_ObjectChangedEventArgs : EventArgs
+    {
+        public GH_ObjectEventType Type;
+    }
+    public class GH_DocUndoEventArgs : EventArgs
+    {
+        public GH_UndoOperation Operation;
+    }
+    public class UndoServer
+    {
+        public List<string> UndoNames = new();
+        public int UndoCount => UndoNames.Count;
+    }
+    public class UndoUtil
+    {
+        private UndoServer s;
+        public UndoUtil(UndoServer server)
+        {
+            s = server;
+        }
+        public void RecordGenericObjectEvent(string name, GH_Group group) => s.UndoNames.Insert(0, name);
+        public void MergeRecords(int n)
+        {
+            if (n > 1 && n <= s.UndoCount) s.UndoNames.RemoveRange(0, n - 1);
+        }
+    }
+    public class GH_Document
+    {
+        public List<IGH_DocumentObject> Objects = new(), Selection = new();
+        public UndoServer UndoServer = new();
+        public UndoUtil UndoUtil;
+        public GH_Document()
+        {
+            UndoUtil = new(UndoServer);
+        }
+        public bool IsModified;
+        public event EventHandler<GH_DocObjectEventArgs> ObjectsAdded, ObjectsDeleted;
+        public event EventHandler<GH_DocUndoEventArgs> UndoStateChanged;
+        public int HandlerCount => (ObjectsAdded?.GetInvocationList().Length ?? 0)
+            + (ObjectsDeleted?.GetInvocationList().Length ?? 0) + (UndoStateChanged?.GetInvocationList().Length ?? 0);
+        // Tests restore the recorded layout first, matching the host's completed Undo/Redo event.
+        public void RaiseUndoStateChanged(GH_UndoOperation operation) =>
+            UndoStateChanged?.Invoke(this, new GH_DocUndoEventArgs { Operation = operation });
+        public List<IGH_DocumentObject> SelectedObjects() => Selection;
+        public void Add(IGH_DocumentObject obj)
+        {
+            Objects.Add(obj);
+            ObjectsAdded?.Invoke(this, new GH_DocObjectEventArgs { Objects = new() { obj } });
+        }
+        public void Delete(IGH_DocumentObject obj)
+        {
+            Objects.Remove(obj);
+            ObjectsDeleted?.Invoke(this, new GH_DocObjectEventArgs { Objects = new() { obj } });
+        }
+    }
+}
+namespace Grasshopper.Kernel.Special
+{
+    public class GH_Group : Obj
+    {
+        public List<Guid> ObjectIDs = new();
+        public GH_Document Document;
+        public GH_Group(GH_Document d)
+        {
+            Document = d;
+            Attributes.Compute = () =>
+            {
+                var members = d.Objects.Where(o => ObjectIDs.Contains(o.InstanceGuid)).ToList();
+                if (members.Count == 0) return RectangleF.Empty;
+                var b = members[0].Attributes.Bounds;
+                foreach (var m in members.Skip(1)) b = RectangleF.Union(b, m.Attributes.Bounds);
+                b.Inflate(10, 10);
+                return b;
+            };
+        }
+        public void CreateAttributes() { }
+        public int CacheExpirations;
+        public void ExpireCaches() { CacheExpirations++; }
+        public void AddObject(Guid id)
+        {
+            if (!ObjectIDs.Contains(id)) ObjectIDs.Add(id);
+        }
+        public void RemoveObject(Guid id) => ObjectIDs.Remove(id);
+    }
+}
+namespace HopperGroup
+{
+    public class HopperGroupComponent : Obj
+    {
+        private bool locked;
+        public event Action<IGH_DocumentObject, GH_ObjectChangedEventArgs> ObjectChanged;
+        public bool Locked
+        {
+            get => locked;
+            set
+            {
+                if (locked == value) return;
+                locked = value;
+                ObjectChanged?.Invoke(this, new GH_ObjectChangedEventArgs { Type = GH_ObjectEventType.Enabled });
+            }
+        }
+        public int RefreshCount;
+        public void ScheduleOutputRefresh() { RefreshCount++; }
+    }
+}
+namespace Rhino { public static class RhinoApp { public static void WriteLine(string s) { } } }

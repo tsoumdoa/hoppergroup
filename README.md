@@ -6,9 +6,9 @@ aectooling by tomoS
 
 ## Features
 
-- Adds dragged objects to the innermost Grasshopper group whose visual boundary contains the object center.
+- Adds moved or newly placed objects to the innermost Grasshopper group whose visual boundary contains the object center.
 - Removes objects from a group only after the object center leaves that group beyond the configured exit buffer.
-- Repairs nested groups by making the smallest contained group a direct child of the next larger containing group.
+- Keeps a carried group's members together, and repairs nested groups when a group moves or Refresh is used.
 - Provides manual refresh and optional debug logging.
 - Marks cached group regions dirty when groups are created or deleted.
 
@@ -33,8 +33,8 @@ The component is available under `Params > Util > Hopper Group`.
 
 ### Inputs
 
-- `Enabled`: turns the automation on or off. Default: `true`.
-- `Exit Scale`: multiplier for the dragged selection footprint used as the removal buffer. Default: `1`.
+- `Enabled`: turns the automation on or off. Default: `true`. Grasshopper's own Disable command also stops the automation.
+- `Exit Scale`: multiplier for each moved object's size used as its removal buffer. Default: `1`.
 - `Refresh`: toggle to rescan all groups and repair membership for every canvas object.
 - `Debug`: writes debug messages to Rhino command history and the `Log` output.
 
@@ -91,7 +91,25 @@ Close Rhino before rebuilding if the plugin is loaded. Public Yak package versio
 
 ## Development Notes
 
-Membership is tested using each object's canvas-space center point. For drag removal, a single component uses its own bounding box as the exit buffer; multiple selected components use the combined selection bounding box. Group hierarchy is based on complete rectangle containment: a smaller group becomes a child of the smallest larger group whose cached bounds fully contain it.
+Membership is tested using each object's canvas-space center point. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. Clicking without moving objects does not change membership. Group hierarchy is based on complete rectangle containment: a smaller group becomes a child of the smallest larger group whose cached bounds fully contain it.
+
+Moves made outside a canvas drag, such as keyboard or script repositioning, are reconciled on the next manual `Refresh` or actual canvas move/drop. Groups whose members all translate together keep their membership. Clicking without moving anything leaves pending moves untouched.
+
+When an external group move is followed by a member drag, the drag uses the group's translated boundary at mouse-down. Individual members can still leave that boundary. Completed Undo and Redo operations reset the stored layout so later movement or Refresh preserves the restored memberships.
+
+Disabling the component, either through `Enabled` or Grasshopper's Disable command, detaches the canvas and document handlers. Movement, placement, Refresh, and undo/redo do not trigger membership work while disabled. Re-enabling captures the current layout without replaying moves made while disabled.
+
+Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history.
+
+When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Refresh after a manual addition establishes the boundary for later individual moves.
+
+Run the isolated membership regression checks with the .NET 10 SDK:
+
+```bash
+dotnet run --project tests/HopperGroup.RegressionTests -c Release
+```
+
+These checks compile the production manager against a simulated canvas, group geometry, undo-record server, and completed undo/redo notifications. Undo/redo scenarios restore positions and memberships explicitly before raising the host event. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
 
 ## License
 
