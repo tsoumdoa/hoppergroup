@@ -551,6 +551,11 @@ namespace HopperGroup
                 return cached;
             }
 
+            if (!_settledGroupMembers.TryGetValue(group.InstanceGuid, out var settledMembers))
+            {
+                return null;
+            }
+
             if (!visiting.Add(group.InstanceGuid))
             {
                 return null;
@@ -559,6 +564,13 @@ namespace HopperGroup
             PointF? translation = null;
             foreach (var id in group.ObjectIDs)
             {
+                // A member added after the last settled layout did not take part in
+                // the group's earlier move, even if it was added at the destination.
+                if (!settledMembers.Contains(id))
+                {
+                    continue;
+                }
+
                 PointF? memberTranslation = null;
                 if (objectsById.TryGetValue(id, out var obj))
                 {
@@ -986,37 +998,17 @@ namespace HopperGroup
                 .ToList();
 
             var changes = 0;
-            var retainedGroupIds = new HashSet<Guid>();
+            var retainedMembership = false;
 
             foreach (var current in currentGroups)
             {
                 var exitBounds = GetExitBounds(current.Bounds, obj.Attributes.Bounds);
-
-                if (selectionContext.IsCarriedGroup(current.Id))
+                if (selectionContext.IsCarriedGroup(current.Id)
+                    || (target != null && current.Id == target.Id)
+                    || (exitBounds.Contains(center)
+                        && (target == null || IsAncestor(target.Id, current.Id))))
                 {
-                    retainedGroupIds.Add(current.Id);
-                    continue;
-                }
-
-                if (target != null && current.Id == target.Id)
-                {
-                    retainedGroupIds.Add(current.Id);
-                    continue;
-                }
-
-                var keepInsideChildSafeZone = target != null
-                    && IsAncestor(target.Id, current.Id)
-                    && exitBounds.Contains(center);
-
-                if (target == null && exitBounds.Contains(center))
-                {
-                    retainedGroupIds.Add(current.Id);
-                    continue;
-                }
-
-                if (keepInsideChildSafeZone)
-                {
-                    retainedGroupIds.Add(current.Id);
+                    retainedMembership = true;
                     continue;
                 }
 
@@ -1027,7 +1019,7 @@ namespace HopperGroup
                 Log($"Removed {ObjectLabel(obj)} from group {current.Id}.");
             }
 
-            if (target != null && retainedGroupIds.Count == 0 && !target.Group.ObjectIDs.Contains(obj.InstanceGuid))
+            if (target != null && !retainedMembership && !target.Group.ObjectIDs.Contains(obj.InstanceGuid))
             {
                 RecordGroupUndo(target.Group, recordedGroups);
                 target.Group.AddObject(obj.InstanceGuid);

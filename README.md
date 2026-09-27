@@ -99,7 +99,7 @@ When an external group move is followed by a member drag, the drag uses the grou
 
 Disabling the component, either through `Enabled` or Grasshopper's Disable command, detaches the canvas and document handlers. Movement, placement, Refresh, and undo/redo do not trigger membership work while disabled. Re-enabling captures the current layout without replaying moves made while disabled.
 
-Manual additions and removals update the boundaries used for pending external moves, including nested groups. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history.
+Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history.
 
 When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Refresh after a manual addition establishes the boundary for later individual moves.
 

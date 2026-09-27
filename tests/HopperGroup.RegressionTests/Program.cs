@@ -446,6 +446,40 @@ class Program
                 && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3,
                 "coherent move lost a group member added since the last settled layout");
         });
+        Check("Manual addition at an external group's destination survives Refresh", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            a.Move(500); b.Move(500);
+            var added = new Obj(530);
+            d.Add(added);
+            g.AddObject(added.InstanceGuid);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3
+                && m.LastChangeCount == 0, "Refresh removed a member after an addition at the destination");
+        });
+        Check("Existing object grouped after an external move preserves old members", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            a.Move(1000); b.Move(1000);
+            g.AddObject(o.InstanceGuid);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(o.InstanceGuid) && g.ObjectIDs.Count == 3
+                && m.LastChangeCount == 0, "Refresh removed a member after grouping an existing object");
+        });
+        Check("Manual addition at an external group's destination survives a drag", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            a.Move(500); b.Move(500);
+            var added = new Obj(530);
+            d.Add(added);
+            g.AddObject(added.InstanceGuid);
+            c.Down(); a.Move(5); c.Up();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3
+                && m.LastChangeCount == 0, "drag removed a member after an addition at the destination");
+        });
         Check("New object moved before manual grouping keeps its current position", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
