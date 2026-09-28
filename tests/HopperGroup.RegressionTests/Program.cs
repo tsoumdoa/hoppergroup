@@ -61,6 +61,25 @@ class Program
             c.Up();
             Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "moved member retained");
         });
+        Check("Small member near the group edge is retained", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a);
+            c.Down();
+            a.Move(110);
+            c.Up();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid), "nearby member left its group too soon");
+        });
+        Check("Exit Scale still controls the removal distance", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            m.Configure(null, d, true, 0, false);
+            d.Selection.Add(a);
+            c.Down();
+            a.Move(110);
+            c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "zero exit scale kept the member");
+        });
         Check("Carried group retains members", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -70,6 +89,74 @@ class Program
             b.Move(500);
             c.Up();
             Assert(g.ObjectIDs.Count == 2, "carried group lost members");
+        });
+        Check("Dragging all selected components carries an unselected group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a);
+            d.Selection.Add(b);
+            c.Down();
+            a.Move(500);
+            b.Move(500);
+            c.Up();
+            Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
+                "component drag removed members from their moving group");
+        });
+        Check("A coherent selected majority carries its group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var third = new Obj(120);
+            d.Add(third);
+            g.AddObject(third.InstanceGuid);
+            m.RefreshAllObjects();
+            d.Selection.Add(a);
+            d.Selection.Add(b);
+            c.Down();
+            a.Move(500);
+            b.Move(500);
+            c.Up();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid),
+                "selected majority was ungrouped");
+        });
+        Check("Dragging selected components carries nested groups", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(a.InstanceGuid);
+            child.AddObject(b.InstanceGuid);
+            d.Add(child);
+            g.RemoveObject(a.InstanceGuid);
+            g.RemoveObject(b.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            d.Selection.Add(a);
+            d.Selection.Add(b);
+            c.Down();
+            a.Move(500);
+            b.Move(500);
+            c.Up();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(child.InstanceGuid), "nested group lost its moving components");
+        });
+        Check("One selected member does not carry a two-member group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a);
+            c.Down();
+            a.Move(500);
+            c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "half the group was treated as a majority");
+        });
+        Check("Selected members moving in different directions do not carry a group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a);
+            d.Selection.Add(b);
+            c.Down();
+            a.Move(500);
+            b.Move(800);
+            c.Up();
+            Assert(g.ObjectIDs.Count == 0, "incoherent component motion carried the group");
         });
         Check("Unselected object dragged into group is added", () =>
         {
@@ -292,7 +379,7 @@ class Program
             var (d, c, m, g, a, b, o) = Setup();
             o.Attributes.Bounds = new RectangleF(1000, 1000, 1000, 1000);
             c.Down();
-            a.Move(110);
+            a.Move(140);
             o.Move(10);
             c.Up();
             Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "large selection inflated small object's buffer");
@@ -358,7 +445,7 @@ class Program
             d.RaiseUndoStateChanged(GH_UndoOperation.Redo);
             d.Selection.Clear();
             d.Selection.Add(b);
-            c.Down(); b.Move(-50); c.Up();
+            c.Down(); b.Move(-60); c.Up();
             Assert(g.ObjectIDs.Count == 0, "member was retained by the group's pre-Redo boundary");
         });
         Check("Undo stack notifications preserve pending external movement", () =>

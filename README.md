@@ -34,7 +34,7 @@ The component is available under `Params > Util > Hopper Group`.
 ### Inputs
 
 - `Enabled`: turns the automation on or off. Default: `true`. Grasshopper's own Disable command also stops the automation.
-- `Exit Scale`: multiplier for each moved object's size used as its removal buffer. Default: `1`.
+- `Exit Scale`: multiplier for the removal buffer. At the default `1`, an object must move beyond its group's edge by 1.5 times its size or at least 40 canvas units, whichever is larger. Increase it for a less sensitive exit; set it to `0` for no buffer.
 - `Refresh`: toggle to rescan all groups and repair membership for every canvas object.
 - `Debug`: writes debug messages to Rhino command history and the `Log` output.
 
@@ -64,7 +64,7 @@ Close Rhino before rebuilding if the plugin is loaded.
 Create a local Yak package with:
 
 ```bash
-./scripts/release-yak.sh 0.2.0
+./scripts/release-yak.sh 0.2.1
 ```
 
 The script updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`.
@@ -78,20 +78,22 @@ If this is your first Yak publish from this machine, log in first:
 To rehearse publishing on McNeel's daily-wiped test server:
 
 ```bash
-./scripts/release-yak.sh 0.2.0-beta.1 --push-test
+./scripts/release-yak.sh 0.2.1-beta.1 --push-test
 ```
 
 To publish to the public Yak server:
 
 ```bash
-./scripts/release-yak.sh 0.2.0 --push-public
+./scripts/release-yak.sh 0.2.1 --push-public
 ```
 
 Close Rhino before rebuilding if the plugin is loaded. Public Yak package versions cannot be overwritten after publishing; bump the version if a pushed release is wrong. Generated release artifacts live under `artifacts/yak/` and are ignored by git.
 
 ## Development Notes
 
-Membership is tested using each object's canvas-space center point. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. Clicking without moving objects does not change membership. Group hierarchy is based on complete rectangle containment: a smaller group becomes a child of the smallest larger group whose cached bounds fully contain it.
+Membership is tested using each object's canvas-space center point. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. The minimum exit buffer gives small objects room near the edge. Clicking without moving objects does not change membership. Group hierarchy is based on complete rectangle containment: a smaller group becomes a child of the smallest larger group whose cached bounds fully contain it.
+
+On a canvas drag, a group stays intact when the group itself is selected and all its members move, or when a strict majority of its components are selected and move by the same offset. This also covers dragging a selection from a component without selecting the group. Moving one component out of a two-component group still removes that component.
 
 Moves made outside a canvas drag, such as keyboard or script repositioning, are reconciled on the next manual `Refresh` or actual canvas move/drop. Groups whose members all translate together keep their membership. Clicking without moving anything leaves pending moves untouched.
 

@@ -318,7 +318,7 @@ namespace HopperGroup
                 && _groups.Any(group => selectedGroups.Contains(group.Id)
                     && _groupBoundsAtMouseDown.TryGetValue(group.Id, out var previous)
                     && GetCurrentGroupBounds(group.Group) != previous);
-            var selectionContext = CreateSelectionContext(movedObjects, selectedGroups);
+            var selectionContext = CreateSelectionContext(movedObjects, selectedIds, selectedGroups);
             var nativeDragWasRecorded = _hasMouseDownSnapshot
                 && _document.UndoServer.UndoCount == _undoCountAtMouseDown + 1
                 && _document.UndoServer.UndoNames.FirstOrDefault() == "Drag";
@@ -881,9 +881,10 @@ namespace HopperGroup
             return changes;
         }
 
-        private SelectionContext CreateSelectionContext(IList<IGH_DocumentObject> movedObjects, HashSet<Guid> selectedGroups)
+        private SelectionContext CreateSelectionContext(IList<IGH_DocumentObject> movedObjects,
+            HashSet<Guid> selectedIds, HashSet<Guid> selectedGroups)
         {
-            if (movedObjects == null || movedObjects.Count == 0 || selectedGroups.Count == 0)
+            if (movedObjects == null || movedObjects.Count == 0)
             {
                 return SelectionContext.Empty;
             }
@@ -893,12 +894,23 @@ namespace HopperGroup
             var carriedGroupIds = new HashSet<Guid>();
             var completeGroups = new Dictionary<Guid, bool>();
 
-            // Every member must move with a selected group to count as a carried group.
+            // A selected group whose entire contents moved is carried by Grasshopper.
             foreach (var group in _groups)
             {
                 if (selectedGroups.Contains(group.Id))
                 {
                     CollectCarriedGroups(group.Group, movedIds, objectsById, completeGroups, carriedGroupIds);
+                }
+            }
+
+            // Dragging a component moves the selected components, even when Grasshopper
+            // does not include their group in SelectedObjects. Keep a group together
+            // when a strict majority of its components moved by the same amount.
+            foreach (var group in _groups)
+            {
+                if (HasMovingSelectedMajority(group.Group, selectedIds, movedIds, objectsById))
+                {
+                    carriedGroupIds.Add(group.Id);
                 }
             }
 
@@ -981,6 +993,67 @@ namespace HopperGroup
             return obj is GH_Group childGroup
                 ? IsCompleteSelectedGroup(childGroup, selectedIds, objectsById, completeGroups, visiting)
                 : IsManagedObject(obj) && selectedIds.Contains(objectId);
+        }
+
+        private bool HasMovingSelectedMajority(GH_Group group, HashSet<Guid> selectedIds,
+            HashSet<Guid> movedIds, Dictionary<Guid, IGH_DocumentObject> objectsById)
+        {
+            var members = new HashSet<Guid>();
+            CollectLeafMembers(group, objectsById, new HashSet<Guid>(), members);
+            if (members.Count < 2)
+            {
+                return false;
+            }
+
+            var translations = new List<PointF>();
+            foreach (var id in members)
+            {
+                if (!selectedIds.Contains(id) || !movedIds.Contains(id)
+                    || !_positionsAtMouseDown.TryGetValue(id, out var previous)
+                    || !objectsById.TryGetValue(id, out var obj))
+                {
+                    continue;
+                }
+
+                var current = GetObjectCenter(obj);
+                translations.Add(new PointF(current.X - previous.X, current.Y - previous.Y));
+            }
+
+            if (translations.Count <= members.Count / 2)
+            {
+                return false;
+            }
+
+            return translations.Any(translation => translations.Count(other =>
+                Math.Abs(translation.X - other.X) <= 0.01f
+                && Math.Abs(translation.Y - other.Y) <= 0.01f) > members.Count / 2);
+        }
+
+        private static void CollectLeafMembers(GH_Group group,
+            Dictionary<Guid, IGH_DocumentObject> objectsById, HashSet<Guid> visitedGroups,
+            HashSet<Guid> members)
+        {
+            if (!visitedGroups.Add(group.InstanceGuid))
+            {
+                return;
+            }
+
+            foreach (var id in group.ObjectIDs)
+            {
+                if (!objectsById.TryGetValue(id, out var obj))
+                {
+                    continue;
+                }
+
+                if (obj is GH_Group child)
+                {
+                    CollectLeafMembers(child, objectsById, visitedGroups, members);
+                }
+                else if (IsManagedObject(obj))
+                {
+                    members.Add(id);
+                }
+            }
         }
 
         private int UpdateObjectMembership(IGH_DocumentObject obj, HashSet<Guid> recordedGroups,
@@ -1098,7 +1171,10 @@ namespace HopperGroup
         private RectangleF GetExitBounds(RectangleF groupBounds, RectangleF dragBounds)
         {
             var exitBounds = groupBounds;
-            exitBounds.Inflate(dragBounds.Width * _exitScale, dragBounds.Height * _exitScale);
+            // Small components need a usable canvas-space buffer too. Keep Exit Scale
+            // as the user's adjustment for both the size-based and minimum distances.
+            exitBounds.Inflate(Math.Max(dragBounds.Width * 1.5f, 40f) * _exitScale,
+                Math.Max(dragBounds.Height * 1.5f, 40f) * _exitScale);
             return exitBounds;
         }
 
