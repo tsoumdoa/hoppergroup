@@ -792,7 +792,8 @@ namespace HopperGroup
                         if (combinedContext.HasCarriedGroups)
                         {
                             BuildDesiredGroupHierarchy(boundsBeforeMove, destinationContext);
-                            LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups, destinationContext, boundsBeforeMove);
+                            LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups, destinationContext, boundsBeforeMove,
+                                combinedContext);
                             RebuildGroupCache();
                         }
 
@@ -949,14 +950,19 @@ namespace HopperGroup
         }
 
         private int EnsureNestedGroupHierarchy(HashSet<Guid> recordedGroups, SelectionContext context,
-            Dictionary<Guid, RectangleF> boundsBeforeMove)
+            Dictionary<Guid, RectangleF> boundsBeforeMove, SelectionContext allMovedGroups = null)
         {
             var changes = 0;
             var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
-            foreach (var child in _groups.Where(group => context.IsCarriedGroup(group.Id)))
+            var affectedContext = allMovedGroups ?? context;
+            foreach (var child in _groups.Where(group => affectedContext.IsCarriedGroup(group.Id)))
             {
+                // Pending external moves still need their parent links reconciled. A group
+                // carried by the current drag uses only that drag's context, so it can leave
+                // a parent that translated earlier. Other groups keep their carried subtree.
+                var childContext = context.IsCarriedGroup(child.Id) ? context : affectedContext;
                 var currentParents = _groups.Where(parent => parent.Group.ObjectIDs.Contains(child.Id)).ToList();
-                var hasCarriedParent = currentParents.Any(parent => context.IsCarriedGroup(parent.Id));
+                var hasCarriedParent = currentParents.Any(parent => childContext.IsCarriedGroup(parent.Id));
 
                 RectangleF ParentBounds(GroupRegion parent) =>
                     boundsBeforeMove != null && boundsBeforeMove.TryGetValue(parent.Id, out var previous)
@@ -964,7 +970,7 @@ namespace HopperGroup
                 // Internal subtree links travel together. Only roots acquire a new
                 // destination, and an existing descendant can never become a parent.
                 var target = hasCarriedParent ? null : _groups.Where(parent => parent.Id != child.Id
-                        && !context.IsCarriedGroup(parent.Id)
+                        && !childContext.IsCarriedGroup(parent.Id)
                         && GetArea(ParentBounds(parent)) > child.Area
                         && ContainsRectangle(ParentBounds(parent), child.Bounds)
                         && !GroupContainsDescendant(child.Group, parent.Id, objectsById))
@@ -972,7 +978,7 @@ namespace HopperGroup
                 var retained = false;
                 foreach (var parent in currentParents)
                 {
-                    if (context.IsCarriedGroup(parent.Id) || parent.Id == target?.Id
+                    if (childContext.IsCarriedGroup(parent.Id) || parent.Id == target?.Id
                         || (GetExitBounds(ParentBounds(parent), child.Bounds).IntersectsWith(child.Bounds)
                             && (target == null || IsAncestor(target.Id, parent.Id))))
                     {

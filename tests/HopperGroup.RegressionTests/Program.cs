@@ -1052,6 +1052,42 @@ class Program
             Assert(root.ObjectIDs.Contains(child.InstanceGuid) && !stationary.ObjectIDs.Contains(child.InstanceGuid)
                 && child.ObjectIDs.Contains(member.InstanceGuid), "stationary parent followed an unrelated carried subtree");
         });
+        Check("External nested exit survives an unrelated native drag", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, a);
+            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            a.Move(500);
+            d.Selection.Add(o); c.Down(); o.Move(100); c.Up();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid),
+                "unrelated drag retained escaped child's parent link");
+            m.RefreshAllObjects();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && m.LastChangeCount == 0,
+                "Refresh changed the reconciled nested exit");
+        });
+        Check("External subtree entry survives an unrelated native drag", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var leaf = AddGroup(d, o);
+            var child = AddGroup(d, leaf);
+            var target = AddGroup(d, new Obj(400, -50), new Obj(600, 50));
+            var outer = AddGroup(d, child, target, new Obj(0, -100));
+            m.RefreshAllObjects();
+            o.Move(-500);
+            d.Selection.Add(a); c.Down();
+            d.UndoServer.UndoNames.Insert(0, "Drag");
+            var undoCount = d.UndoServer.UndoCount;
+            a.Move(-500); c.Up();
+            Assert(target.ObjectIDs.Contains(child.InstanceGuid) && !outer.ObjectIDs.Contains(child.InstanceGuid)
+                && child.ObjectIDs.Contains(leaf.InstanceGuid) && !target.ObjectIDs.Contains(leaf.InstanceGuid)
+                && leaf.ObjectIDs.Contains(o.InstanceGuid),
+                "unrelated drag lost the pending transfer or flattened the subtree");
+            Assert(d.UndoServer.UndoCount == undoCount, "pending transfer was split from the native drag undo record");
+            m.RefreshAllObjects();
+            Assert(target.ObjectIDs.Contains(child.InstanceGuid) && m.LastChangeCount == 0,
+                "Refresh changed the reconciled nested transfer");
+        });
         Console.WriteLine("Failed: " + failures);
         Environment.ExitCode = failures == 0 ? 0 : 1;
     }
