@@ -12,6 +12,13 @@ using HopperGroup;
 namespace System.Windows.Forms
 {
     public enum MouseButtons { Left, Right }
+    public enum Keys { F6, Escape }
+    public class KeyEventArgs : EventArgs
+    {
+        public Keys KeyCode { get; set; }
+        public bool Handled { get; set; }
+        public bool SuppressKeyPress { get; set; }
+    }
     public class MouseEventArgs : EventArgs
     {
         public MouseButtons Button
@@ -40,9 +47,14 @@ namespace Grasshopper.GUI.Canvas
     {
         public GH_Document Document;
         public event EventHandler<System.Windows.Forms.MouseEventArgs> MouseDown, MouseUp;
-        public int HandlerCount => (MouseDown?.GetInvocationList().Length ?? 0) + (MouseUp?.GetInvocationList().Length ?? 0);
+        public event EventHandler<System.Windows.Forms.KeyEventArgs> KeyDown;
+        public int HandlerCount => (MouseDown?.GetInvocationList().Length ?? 0) + (MouseUp?.GetInvocationList().Length ?? 0)
+            + (KeyDown?.GetInvocationList().Length ?? 0);
         public void Down() => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
         public void Up() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(100, 0) });
+        public void ClickUp() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
+        public void F6() => KeyDown?.Invoke(this, new System.Windows.Forms.KeyEventArgs { KeyCode = System.Windows.Forms.Keys.F6 });
+        public void Escape() => KeyDown?.Invoke(this, new System.Windows.Forms.KeyEventArgs { KeyCode = System.Windows.Forms.Keys.Escape });
     }
 }
 namespace Grasshopper.Kernel
