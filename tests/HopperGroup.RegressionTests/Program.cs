@@ -27,6 +27,17 @@ class Program
     {
         if (!condition) throw new Exception(message);
     }
+    static GH_Group AddGroup(GH_Document document, params IGH_DocumentObject[] members)
+    {
+        var group = new GH_Group(document);
+        foreach (var member in members)
+        {
+            if (!document.Objects.Contains(member)) document.Add(member);
+            group.AddObject(member.InstanceGuid);
+        }
+        document.Add(group);
+        return group;
+    }
     static (GH_Document, GH_Canvas, GroupMembershipManager, GH_Group, Obj, Obj, Obj) Setup()
     {
         var d = new GH_Document();
@@ -885,6 +896,161 @@ class Program
             c.Down(); c.ClickUp();
             Assert(!child.ObjectIDs.Contains(g.InstanceGuid) && m.LastChangeCount == 0,
                 "F6 created a cyclic group hierarchy");
+        });
+        Check("F6 preserves unrelated pending external moves", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var x = new Obj(2000); var y = new Obj(2060);
+            d.Add(x); d.Add(y);
+            var target = new GH_Group(d); target.AddObject(x.InstanceGuid); target.AddObject(y.InstanceGuid); d.Add(target);
+            a.Move(500);
+            d.Selection.Add(o); c.F6();
+            d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
+            m.RefreshAllObjects();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "F6 erased unrelated pending external move; escaped member retained");
+        });
+        Check("Child joins inner destination while staying inside outer parent", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            b.Move(940);
+            var left = new Obj(400); var right = new Obj(600); var member = new Obj(100);
+            d.Add(left); d.Add(right); d.Add(member);
+            var target = new GH_Group(d); target.AddObject(left.InstanceGuid); target.AddObject(right.InstanceGuid); d.Add(target);
+            var child = new GH_Group(d); child.AddObject(member.InstanceGuid); d.Add(child);
+            g.AddObject(child.InstanceGuid); g.AddObject(target.InstanceGuid);
+            d.Selection.Add(child); c.Down(); member.Move(400); c.Up();
+            Assert(target.ObjectIDs.Contains(child.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid)
+                && g.ObjectIDs.Contains(target.InstanceGuid) && child.ObjectIDs.Contains(member.InstanceGuid),
+                "fully enclosed child failed to transfer to inner destination");
+            Assert(d.UndoServer.UndoCount == 1, "nested transfer was split across undo records");
+        });
+        Check("F6 preserves pending moves through an unrelated native drag", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var target = AddGroup(d, new Obj(2000), new Obj(2060));
+            a.Move(500);
+            d.Selection.Add(o); c.F6();
+            d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
+            d.Selection.Clear(); d.Selection.Add(o); c.Down(); o.Move(5); c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && target.ObjectIDs.Contains(o.InstanceGuid),
+                "F6 lost pending movement or the subsequent drag undid the addition");
+        });
+        Check("F6 into a nested child preserves pending member exits", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var sibling = new Obj(30);
+            var child = AddGroup(d, a, sibling);
+            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            var added = new Obj(20); d.Add(added);
+            a.Move(500);
+            d.Selection.Add(added); c.F6();
+            d.Selection.Clear(); d.Selection.Add(child); c.Down(); c.ClickUp();
+            m.RefreshAllObjects();
+            Assert(!child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
+                && child.ObjectIDs.Contains(sibling.InstanceGuid) && g.ObjectIDs.Contains(child.InstanceGuid),
+                "nested F6 edit erased an exit or damaged parent-child membership");
+        });
+        Check("F6 adds a subtree and later dragging it out preserves internal links", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var leaf = AddGroup(d, o);
+            var root = AddGroup(d, leaf);
+            d.Selection.Add(root); c.F6();
+            d.Selection.Clear(); d.Selection.Add(g); c.Down(); c.ClickUp();
+            Assert(g.ObjectIDs.Contains(root.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
+                && leaf.ObjectIDs.Contains(o.InstanceGuid), "F6 flattened the subtree");
+            m.RefreshAllObjects();
+            d.Selection.Clear(); d.Selection.Add(root); c.Down(); o.Move(500); c.Up();
+            Assert(!g.ObjectIDs.Contains(root.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
+                && leaf.ObjectIDs.Contains(o.InstanceGuid), "subtree exit damaged internal links");
+        });
+        Check("F6 rejects a deep cycle while still adding valid selected objects", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var leaf = AddGroup(d, o);
+            var middle = AddGroup(d, leaf);
+            g.AddObject(middle.InstanceGuid);
+            var added = new Obj(1030); d.Add(added);
+            d.Selection.Add(g); d.Selection.Add(added); c.F6();
+            d.Selection.Clear(); d.Selection.Add(leaf); c.Down(); c.ClickUp();
+            Assert(!leaf.ObjectIDs.Contains(g.InstanceGuid) && leaf.ObjectIDs.Contains(added.InstanceGuid)
+                && middle.ObjectIDs.Contains(leaf.InstanceGuid) && g.ObjectIDs.Contains(middle.InstanceGuid)
+                && m.LastChangeCount == 1, "deep cycle was accepted or valid addition was lost");
+        });
+        Check("Escape cancels F6 without changing nested memberships or undo history", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, o);
+            d.Selection.Add(child); c.F6(); c.Escape();
+            d.Selection.Clear(); d.Selection.Add(g); c.Down(); c.ClickUp();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid)
+                && d.UndoServer.UndoCount == 0, "cancelled shortcut changed the document");
+        });
+        Check("Child transfers between siblings despite the old parent's exit buffer", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var member = new Obj(100);
+            var child = AddGroup(d, member);
+            var source = AddGroup(d, new Obj(0), new Obj(150), child);
+            var target = AddGroup(d, new Obj(200), new Obj(350));
+            var outer = AddGroup(d, source, target);
+            d.Selection.Add(child); c.Down(); member.Move(110); c.Up();
+            Assert(target.ObjectIDs.Contains(child.InstanceGuid) && !source.ObjectIDs.Contains(child.InstanceGuid)
+                && outer.ObjectIDs.Contains(source.InstanceGuid) && outer.ObjectIDs.Contains(target.InstanceGuid)
+                && child.ObjectIDs.Contains(member.InstanceGuid), "buffer blocked sibling transfer");
+        });
+        Check("Nested subtree enters a destination without flattening descendants", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var leaf = AddGroup(d, o);
+            var root = AddGroup(d, leaf);
+            var target = AddGroup(d, new Obj(400, -50), new Obj(600, 50));
+            var outer = AddGroup(d, target, root, new Obj(0, -100));
+            d.Selection.Add(root); c.Down(); o.Move(-500); c.Up();
+            Assert(target.ObjectIDs.Contains(root.InstanceGuid) && !outer.ObjectIDs.Contains(root.InstanceGuid)
+                && outer.ObjectIDs.Contains(target.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
+                && !target.ObjectIDs.Contains(leaf.InstanceGuid) && leaf.ObjectIDs.Contains(o.InstanceGuid),
+                "subtree transfer flattened descendants or retained the old direct parent");
+        });
+        Check("Externally moved child transfers to the inner destination on Refresh", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, o);
+            var target = AddGroup(d, new Obj(400), new Obj(600));
+            var outer = AddGroup(d, child, target, new Obj(0));
+            m.RefreshAllObjects();
+            o.Move(-500); m.RefreshAllObjects();
+            Assert(target.ObjectIDs.Contains(child.InstanceGuid) && !outer.ObjectIDs.Contains(child.InstanceGuid)
+                && outer.ObjectIDs.Contains(target.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid),
+                "external transfer failed to preserve the subtree");
+            m.RefreshAllObjects();
+            Assert(m.LastChangeCount == 0, "nested transfer was not stable after Refresh");
+        });
+        Check("Child keeps its inner parent until its box clears the exit buffer", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var member = new Obj(100);
+            var child = AddGroup(d, member);
+            var parent = AddGroup(d, new Obj(0), new Obj(150), child);
+            var outer = AddGroup(d, parent, new Obj(500, 50));
+            d.Selection.Add(child); c.Down(); member.Move(105); c.Up();
+            Assert(parent.ObjectIDs.Contains(child.InstanceGuid) && !outer.ObjectIDs.Contains(child.InstanceGuid),
+                "partially overlapping buffered child was removed early");
+            c.Down(); member.Move(150); c.Up();
+            Assert(!parent.ObjectIDs.Contains(child.InstanceGuid) && outer.ObjectIDs.Contains(child.InstanceGuid)
+                && child.ObjectIDs.Contains(member.InstanceGuid), "child did not transfer to outer after clearing buffer");
+        });
+        Check("Carried subtree drops a stationary second parent without losing its moving parent", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var member = new Obj(100);
+            var child = AddGroup(d, member);
+            var root = AddGroup(d, child);
+            var stationary = AddGroup(d, child, new Obj(150));
+            d.Selection.Add(root); c.Down(); member.Move(500); c.Up();
+            Assert(root.ObjectIDs.Contains(child.InstanceGuid) && !stationary.ObjectIDs.Contains(child.InstanceGuid)
+                && child.ObjectIDs.Contains(member.InstanceGuid), "stationary parent followed an unrelated carried subtree");
         });
         Console.WriteLine("Failed: " + failures);
         Environment.ExitCode = failures == 0 ? 0 : 1;

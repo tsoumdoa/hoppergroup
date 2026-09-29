@@ -93,7 +93,7 @@ Close Rhino before rebuilding if the plugin is loaded. Public Yak package versio
 
 ## Development Notes
 
-Ordinary object membership is tested using each object's canvas-space center point. A dragged group uses its full bounding box: it joins a destination only when fully enclosed, and leaves its current parent when its box clears the buffered parent boundary. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. The minimum exit buffer gives small objects room near the edge. Clicking without moving objects does not change membership. Existing nested group links remain intact when only an individual member changes.
+Ordinary object membership is tested using each object's canvas-space center point. A dragged group uses its full bounding box: it joins the innermost destination that fully encloses it. Moving into an inner or sibling destination transfers the direct parent link while preserving the dragged group's descendants. Otherwise, it leaves its current parent when its box clears the buffered parent boundary. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. The minimum exit buffer gives small objects room near the edge. Clicking without moving objects does not change membership. Existing nested group links remain intact when only an individual member changes.
 
 On a canvas drag, a group stays intact when the group itself is selected and all its members move, or when a strict majority of its components are selected and move by the same offset. This also covers dragging a selection from a component without selecting the group. Moving one component out of a two-component group still removes that component.
 
@@ -103,7 +103,7 @@ When an external group move is followed by a member drag, the drag uses the grou
 
 Disabling the component, either through `Enabled` or Grasshopper's Disable command, detaches the canvas and document handlers. Movement, placement, Refresh, and undo/redo do not trigger membership work while disabled. Re-enabling captures the current layout without replaying moves made while disabled.
 
-Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history.
+Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history, including when membership is added with F6. Both F6 additions and drag destinations reject nesting a group inside its own descendant.
 
 When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Refresh after a manual addition establishes the boundary for later individual moves.
 

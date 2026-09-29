@@ -432,7 +432,8 @@ namespace HopperGroup
                 _document.IsModified = true;
                 Instances.InvalidateCanvas();
                 RebuildGroupCache();
-                RememberSettledLayout();
+                // Treat this like a manual membership edit. Other objects may have
+                // pending external moves that still need their settled boundaries.
             }
             LastChangeCount = changes;
             Status = $"Added {changes} object(s) to group";
@@ -951,27 +952,29 @@ namespace HopperGroup
             Dictionary<Guid, RectangleF> boundsBeforeMove)
         {
             var changes = 0;
+            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
             foreach (var child in _groups.Where(group => context.IsCarriedGroup(group.Id)))
             {
                 var currentParents = _groups.Where(parent => parent.Group.ObjectIDs.Contains(child.Id)).ToList();
-                if (currentParents.Any(parent => context.IsCarriedGroup(parent.Id)))
-                {
-                    continue;
-                }
+                var hasCarriedParent = currentParents.Any(parent => context.IsCarriedGroup(parent.Id));
 
                 RectangleF ParentBounds(GroupRegion parent) =>
                     boundsBeforeMove != null && boundsBeforeMove.TryGetValue(parent.Id, out var previous)
                         ? previous : parent.Bounds;
-                var target = _groups.Where(parent => parent.Id != child.Id
+                // Internal subtree links travel together. Only roots acquire a new
+                // destination, and an existing descendant can never become a parent.
+                var target = hasCarriedParent ? null : _groups.Where(parent => parent.Id != child.Id
                         && !context.IsCarriedGroup(parent.Id)
                         && GetArea(ParentBounds(parent)) > child.Area
-                        && ContainsRectangle(ParentBounds(parent), child.Bounds))
+                        && ContainsRectangle(ParentBounds(parent), child.Bounds)
+                        && !GroupContainsDescendant(child.Group, parent.Id, objectsById))
                     .OrderBy(parent => GetArea(ParentBounds(parent))).FirstOrDefault();
                 var retained = false;
                 foreach (var parent in currentParents)
                 {
-                    if (parent.Id == target?.Id
-                        || GetExitBounds(ParentBounds(parent), child.Bounds).IntersectsWith(child.Bounds))
+                    if (context.IsCarriedGroup(parent.Id) || parent.Id == target?.Id
+                        || (GetExitBounds(ParentBounds(parent), child.Bounds).IntersectsWith(child.Bounds)
+                            && (target == null || IsAncestor(target.Id, parent.Id))))
                     {
                         retained = true;
                         continue;

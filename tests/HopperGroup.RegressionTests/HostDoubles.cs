@@ -54,6 +54,7 @@ namespace Grasshopper.GUI.Canvas
         public void Up() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(100, 0) });
         public void ClickUp() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
         public void F6() => KeyDown?.Invoke(this, new System.Windows.Forms.KeyEventArgs { KeyCode = System.Windows.Forms.Keys.F6 });
+        public void Escape() => KeyDown?.Invoke(this, new System.Windows.Forms.KeyEventArgs { KeyCode = System.Windows.Forms.Keys.Escape });
     }
 }
 namespace Grasshopper.Kernel
