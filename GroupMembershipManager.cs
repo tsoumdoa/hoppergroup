@@ -22,6 +22,7 @@ namespace HopperGroup
         private readonly Dictionary<Guid, PointF> _settledObjectCenters = new Dictionary<Guid, PointF>();
         private readonly HashSet<Guid> _newObjectIdsSinceSettled = new HashSet<Guid>();
         private readonly HashSet<Guid> _addedObjectIds = new HashSet<Guid>();
+        private readonly HashSet<Guid> _shortcutObjectIds = new HashSet<Guid>();
         private readonly StringBuilder _debugLog = new StringBuilder();
         private HopperGroupComponent _owner;
         private GH_Document _document;
@@ -67,6 +68,7 @@ namespace HopperGroup
             {
                 UnsubscribeDocument();
                 ClearDragState();
+                _shortcutObjectIds.Clear();
                 ClearSettledLayout();
                 _document = document;
                 _cacheDirty = true;
@@ -180,6 +182,7 @@ namespace HopperGroup
             // The host has restored both positions and membership. Treat that layout as
             // authoritative instead of interpreting the restored positions as external moves.
             ClearDragState();
+            _shortcutObjectIds.Clear();
             RebuildGroupCache();
             RememberSettledLayout();
             LastChangeCount = 0;
@@ -198,6 +201,7 @@ namespace HopperGroup
             _canvas = activeCanvas;
             _canvas.MouseDown += OnCanvasMouseDown;
             _canvas.MouseUp += OnCanvasMouseUp;
+            _canvas.KeyDown += OnCanvasKeyDown;
             Log("Subscribed to active Grasshopper canvas mouse events.");
         }
 
@@ -210,7 +214,9 @@ namespace HopperGroup
 
             _canvas.MouseDown -= OnCanvasMouseDown;
             _canvas.MouseUp -= OnCanvasMouseUp;
+            _canvas.KeyDown -= OnCanvasKeyDown;
             _canvas = null;
+            _shortcutObjectIds.Clear();
             ClearDragState();
         }
 
@@ -247,6 +253,7 @@ namespace HopperGroup
                 _positionsAtMouseDown.Remove(obj.InstanceGuid);
                 _settledObjectCenters.Remove(obj.InstanceGuid);
                 _newObjectIdsSinceSettled.Remove(obj.InstanceGuid);
+                _shortcutObjectIds.Remove(obj.InstanceGuid);
                 _settledGroupBounds.Remove(obj.InstanceGuid);
                 _settledGroupMembers.Remove(obj.InstanceGuid);
             }
@@ -304,6 +311,23 @@ namespace HopperGroup
                 return;
             }
 
+            if (_shortcutObjectIds.Count > 0)
+            {
+                var targets = _document.SelectedObjects().OfType<GH_Group>().ToList();
+                if (targets.Count == 1 && !_shortcutObjectIds.Contains(targets[0].InstanceGuid)
+                    && _hasMouseDownSnapshot
+                    && Math.Abs(e.Location.X - _mouseDownLocation.X) <= 3
+                    && Math.Abs(e.Location.Y - _mouseDownLocation.Y) <= 3
+                    && _groupBoundsAtMouseDown.TryGetValue(targets[0].InstanceGuid, out var originalBounds)
+                    && GetCurrentGroupBounds(targets[0]) == originalBounds)
+                {
+                    AddShortcutSelection(targets[0]);
+                    ClearDragState();
+                    return;
+                }
+                _shortcutObjectIds.Clear();
+            }
+
             var selection = _document.SelectedObjects();
             var selectedIds = new HashSet<Guid>(selection.Select(obj => obj.InstanceGuid));
             var movedObjects = GetManagedObjects(_document.Objects)
@@ -342,6 +366,97 @@ namespace HopperGroup
                 selectionContext: selectionContext, mergeWithNativeDrag: nativeDragWasRecorded,
                 reconcileExternalMoves: pendingExternalIds.Count > 0, externalObjectIds: pendingExternalIds,
                 externalSnapshot: externalSnapshot);
+        }
+
+        private void OnCanvasKeyDown(object sender, KeyEventArgs e)
+        {
+            if (!_enabled || !IsCurrentCanvasDocument())
+            {
+                return;
+            }
+
+            if (e.KeyCode == Keys.Escape && _shortcutObjectIds.Count > 0)
+            {
+                _shortcutObjectIds.Clear();
+                Status = "F6 add cancelled";
+                _owner?.ScheduleOutputRefresh();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
+            if (e.KeyCode != Keys.F6) return;
+
+            var selected = _document.SelectedObjects();
+            var groups = selected.OfType<GH_Group>().ToList();
+            if (groups.Count == 1 && _shortcutObjectIds.Count > 0)
+            {
+                AddShortcutSelection(groups[0]);
+            }
+            else
+            {
+                _shortcutObjectIds.Clear();
+                foreach (var obj in selected.Where(obj => obj != null && obj != _owner))
+                {
+                    _shortcutObjectIds.Add(obj.InstanceGuid);
+                }
+                Status = _shortcutObjectIds.Count == 0
+                    ? "Select objects before pressing F6"
+                    : $"F6: select one destination group for {_shortcutObjectIds.Count} object(s)";
+                _owner?.ScheduleOutputRefresh();
+            }
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+
+        private void AddShortcutSelection(GH_Group target)
+        {
+            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var recordedGroups = new HashSet<Guid>();
+            var changes = 0;
+            foreach (var id in _shortcutObjectIds)
+            {
+                if (!objectsById.TryGetValue(id, out var obj) || obj == target || obj == _owner
+                    || (obj is GH_Group child && GroupContainsDescendant(child, target.InstanceGuid, objectsById))
+                    || target.ObjectIDs.Contains(id))
+                {
+                    continue;
+                }
+                RecordGroupUndo(target, recordedGroups);
+                target.AddObject(id);
+                changes++;
+            }
+            _shortcutObjectIds.Clear();
+            if (changes > 0)
+            {
+                ExpireGroup(target);
+                _document.IsModified = true;
+                Instances.InvalidateCanvas();
+                RebuildGroupCache();
+                RememberSettledLayout();
+            }
+            LastChangeCount = changes;
+            Status = $"Added {changes} object(s) to group";
+            _owner?.ScheduleOutputRefresh();
+        }
+
+        private static bool GroupContainsDescendant(GH_Group group, Guid id,
+            Dictionary<Guid, IGH_DocumentObject> objectsById)
+        {
+            var visited = new HashSet<Guid>();
+            var pending = new Stack<GH_Group>();
+            pending.Push(group);
+            while (pending.Count > 0)
+            {
+                var current = pending.Pop();
+                if (!visited.Add(current.InstanceGuid)) continue;
+                if (current.ObjectIDs.Contains(id)) return true;
+                foreach (var memberId in current.ObjectIDs)
+                {
+                    if (objectsById.TryGetValue(memberId, out var member) && member is GH_Group child)
+                        pending.Push(child);
+                }
+            }
+            return false;
         }
 
         private bool IsCurrentCanvasDocument()
@@ -676,7 +791,7 @@ namespace HopperGroup
                         if (combinedContext.HasCarriedGroups)
                         {
                             BuildDesiredGroupHierarchy(boundsBeforeMove, destinationContext);
-                            LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
+                            LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups, destinationContext, boundsBeforeMove);
                             RebuildGroupCache();
                         }
 
@@ -700,11 +815,6 @@ namespace HopperGroup
                     ? _groups.ToDictionary(group => group.Id, group => group.Bounds)
                     : null;
 
-                if (refreshCache && !selectionContext.HasCarriedGroups)
-                {
-                    LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
-                }
-
                 foreach (var obj in objects)
                 {
                     LastChangeCount += UpdateObjectMembership(obj, recordedGroups, selectionContext);
@@ -714,17 +824,12 @@ namespace HopperGroup
                 {
                     RebuildGroupCache();
                     BuildDesiredGroupHierarchy(boundsBeforeCarriedGroupMove, selectionContext);
-                    LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
+                    LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups, selectionContext, boundsBeforeCarriedGroupMove);
                     RebuildGroupCache();
                 }
                 else
                 {
                     RebuildGroupCache();
-                    if (refreshCache)
-                    {
-                        LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups);
-                        RebuildGroupCache();
-                    }
                 }
 
                 RememberSettledLayout();
@@ -842,39 +947,48 @@ namespace HopperGroup
             }
         }
 
-        private int EnsureNestedGroupHierarchy(HashSet<Guid> recordedGroups)
+        private int EnsureNestedGroupHierarchy(HashSet<Guid> recordedGroups, SelectionContext context,
+            Dictionary<Guid, RectangleF> boundsBeforeMove)
         {
             var changes = 0;
-
-            foreach (var parent in _groups)
+            foreach (var child in _groups.Where(group => context.IsCarriedGroup(group.Id)))
             {
-                foreach (var child in _groups)
+                var currentParents = _groups.Where(parent => parent.Group.ObjectIDs.Contains(child.Id)).ToList();
+                if (currentParents.Any(parent => context.IsCarriedGroup(parent.Id)))
                 {
-                    if (parent.Id == child.Id)
+                    continue;
+                }
+
+                RectangleF ParentBounds(GroupRegion parent) =>
+                    boundsBeforeMove != null && boundsBeforeMove.TryGetValue(parent.Id, out var previous)
+                        ? previous : parent.Bounds;
+                var target = _groups.Where(parent => parent.Id != child.Id
+                        && !context.IsCarriedGroup(parent.Id)
+                        && GetArea(ParentBounds(parent)) > child.Area
+                        && ContainsRectangle(ParentBounds(parent), child.Bounds))
+                    .OrderBy(parent => GetArea(ParentBounds(parent))).FirstOrDefault();
+                var retained = false;
+                foreach (var parent in currentParents)
+                {
+                    if (parent.Id == target?.Id
+                        || GetExitBounds(ParentBounds(parent), child.Bounds).IntersectsWith(child.Bounds))
                     {
+                        retained = true;
                         continue;
                     }
-
-                    var shouldContainChild = _parentByChild.TryGetValue(child.Id, out var desiredParentId)
-                        && desiredParentId == parent.Id;
-                    var containsChild = parent.Group.ObjectIDs.Contains(child.Id);
-
-                    if (shouldContainChild && !containsChild)
-                    {
-                        RecordGroupUndo(parent.Group, recordedGroups);
-                        parent.Group.AddObject(child.Id);
-                        ExpireGroup(parent.Group);
-                        changes++;
-                        Log($"Nested group {child.Id} inside {parent.Id}.");
-                    }
-                    else if (!shouldContainChild && containsChild)
-                    {
-                        RecordGroupUndo(parent.Group, recordedGroups);
-                        parent.Group.RemoveObject(child.Id);
-                        ExpireGroup(parent.Group);
-                        changes++;
-                        Log($"Removed stale nested group {child.Id} from {parent.Id}.");
-                    }
+                    RecordGroupUndo(parent.Group, recordedGroups);
+                    parent.Group.RemoveObject(child.Id);
+                    ExpireGroup(parent.Group);
+                    changes++;
+                    Log($"Removed nested group {child.Id} from {parent.Id}.");
+                }
+                if (!retained && target != null && !target.Group.ObjectIDs.Contains(child.Id))
+                {
+                    RecordGroupUndo(target.Group, recordedGroups);
+                    target.Group.AddObject(child.Id);
+                    ExpireGroup(target.Group);
+                    changes++;
+                    Log($"Nested group {child.Id} inside {target.Id}.");
                 }
             }
 

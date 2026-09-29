@@ -8,7 +8,9 @@ aectooling by tomoS
 
 - Adds moved or newly placed objects to the innermost Grasshopper group whose visual boundary contains the object center.
 - Removes objects from a group only after the object center leaves that group beyond the configured exit buffer.
-- Keeps a carried group's members together, and repairs nested groups when a group moves or Refresh is used.
+- Keeps a carried group's members together and preserves nested groups while their individual members change.
+- Adds a dragged group to another group when its whole bounding box fits inside the destination.
+- Press `F6` with objects selected, then click one destination group to add them in one step. Press `Esc` to cancel.
 - Provides manual refresh and optional debug logging.
 - Marks cached group regions dirty when groups are created or deleted.
 
@@ -91,7 +93,7 @@ Close Rhino before rebuilding if the plugin is loaded. Public Yak package versio
 
 ## Development Notes
 
-Membership is tested using each object's canvas-space center point. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. The minimum exit buffer gives small objects room near the edge. Clicking without moving objects does not change membership. Group hierarchy is based on complete rectangle containment: a smaller group becomes a child of the smallest larger group whose cached bounds fully contain it.
+Ordinary object membership is tested using each object's canvas-space center point. A dragged group uses its full bounding box: it joins a destination only when fully enclosed, and leaves its current parent when its box clears the buffered parent boundary. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. The minimum exit buffer gives small objects room near the edge. Clicking without moving objects does not change membership. Existing nested group links remain intact when only an individual member changes.
 
 On a canvas drag, a group stays intact when the group itself is selected and all its members move, or when a strict majority of its components are selected and move by the same offset. This also covers dragging a selection from a component without selecting the group. Moving one component out of a two-component group still removes that component.
 

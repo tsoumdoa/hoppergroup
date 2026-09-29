@@ -818,6 +818,74 @@ class Program
             Assert(g.ObjectIDs.Count == 2 && c.HandlerCount == 0 && d.HandlerCount == 0,
                 "disposed manager resumed handling events");
         });
+        Check("Changing a child member does not remove the child group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var innerMember = new Obj(30);
+            d.Add(innerMember);
+            var child = new GH_Group(d);
+            child.AddObject(a.InstanceGuid);
+            child.AddObject(innerMember.InstanceGuid);
+            d.Add(child);
+            g.RemoveObject(a.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            d.Selection.Add(a);
+            c.Down(); a.Move(500); c.Up();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid)
+                && child.ObjectIDs.Contains(innerMember.InstanceGuid)
+                && !child.ObjectIDs.Contains(a.InstanceGuid), "member exit removed the nested group");
+        });
+        Check("A dragged group must fit inside the destination bounds", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(o.InstanceGuid);
+            d.Add(child);
+            d.Selection.Add(child);
+            c.Down(); o.Move(-925); c.Up();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid), "partial overlap nested the group");
+            c.Down(); o.Move(-25); c.Up();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid), "fully enclosed group was not added");
+        });
+        Check("A dragged child keeps its members when leaving its parent", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(a.InstanceGuid);
+            d.Add(child);
+            g.RemoveObject(a.InstanceGuid);
+            g.AddObject(child.InstanceGuid);
+            m.RefreshAllObjects();
+            d.Selection.Add(child);
+            c.Down(); a.Move(500); c.Up();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid),
+                "child drag damaged its own membership or kept the parent link");
+        });
+        Check("F6 adds the captured selection after one group click", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(o);
+            c.F6();
+            d.Selection.Clear(); d.Selection.Add(g);
+            c.Down(); c.ClickUp();
+            Assert(g.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 1,
+                "F6 did not add the captured object");
+        });
+        Check("F6 does not add a group into its own descendant", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = new GH_Group(d);
+            child.AddObject(o.InstanceGuid);
+            d.Add(child);
+            g.AddObject(child.InstanceGuid);
+            d.Selection.Add(g);
+            c.F6();
+            d.Selection.Clear(); d.Selection.Add(child);
+            c.Down(); c.ClickUp();
+            Assert(!child.ObjectIDs.Contains(g.InstanceGuid) && m.LastChangeCount == 0,
+                "F6 created a cyclic group hierarchy");
+        });
         Console.WriteLine("Failed: " + failures);
         Environment.ExitCode = failures == 0 ? 0 : 1;
     }
