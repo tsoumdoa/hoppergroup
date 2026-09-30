@@ -1029,6 +1029,8 @@ namespace HopperGroup
             // Dragging a component moves the selected components, even when Grasshopper
             // does not include their group in SelectedObjects. Keep a group together
             // when a strict majority of its components moved by the same amount.
+            // A group's only component is also a majority: carry its group rather
+            // than emptying it or flattening it into a destination group.
             foreach (var group in _groups)
             {
                 if (HasMovingSelectedMajority(group.Group, selectedIds, movedIds, objectsById))
@@ -1123,7 +1125,7 @@ namespace HopperGroup
         {
             var members = new HashSet<Guid>();
             CollectLeafMembers(group, objectsById, new HashSet<Guid>(), members);
-            if (members.Count < 2)
+            if (members.Count == 0)
             {
                 return false;
             }

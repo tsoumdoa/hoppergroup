@@ -63,6 +63,166 @@ class Program
             c.Up();
             Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0, "click mutated group");
         });
+        Check("Dragging the only selected component preserves its group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, o);
+            d.Selection.Add(o);
+            c.Down(); o.Move(500); c.Up();
+            Assert(child.ObjectIDs.SequenceEqual(new[] { o.InstanceGuid }) && d.Objects.Contains(child)
+                && m.GroupCount == 2 && m.LastChangeCount == 0,
+                "dragging the only component emptied its group");
+            m.RefreshAllObjects();
+            Assert(child.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 0,
+                "Refresh undid the single-component drag");
+        });
+        Check("The last remaining selected component carries its group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a);
+            c.Down(); a.Move(500); c.Up();
+            Assert(g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }), "setup did not leave one member");
+            d.Selection.Clear(); d.Selection.Add(b);
+            c.Down(); b.Move(1500); c.Up();
+            Assert(g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }) && m.LastChangeCount == 0,
+                "the last remaining component emptied its group");
+        });
+        Check("Dragging the only component nests its group without flattening it", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, o);
+            d.Selection.Add(o);
+            c.Down();
+            d.UndoServer.UndoNames.Insert(0, "Drag");
+            o.Move(-970); c.Up();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && !g.ObjectIDs.Contains(o.InstanceGuid)
+                && child.ObjectIDs.SequenceEqual(new[] { o.InstanceGuid }),
+                "transfer replaced the single-component group with its component");
+            Assert(d.UndoServer.UndoCount == 1 && d.UndoServer.UndoNames[0] == "Drag",
+                "single-component transfer did not merge with the native drag undo");
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid)
+                && m.LastChangeCount == 0, "Refresh undid the nested transfer");
+        });
+        Check("A single-component group needs full enclosure before nesting", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, o);
+            d.Selection.Add(o);
+            c.Down(); o.Move(-925); c.Up();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && !g.ObjectIDs.Contains(o.InstanceGuid)
+                && child.ObjectIDs.Contains(o.InstanceGuid), "partial overlap flattened or nested the group");
+            c.Down(); o.Move(-25); c.Up();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && !g.ObjectIDs.Contains(o.InstanceGuid)
+                && child.ObjectIDs.Contains(o.InstanceGuid), "fully enclosed group failed to nest");
+        });
+        Check("Dragging the only component out releases its group from its parent", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, a);
+            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
+            d.Selection.Add(a);
+            c.Down(); a.Move(500); c.Up();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid)
+                && g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }),
+                "exit emptied the child or left its old parent link");
+            m.RefreshAllObjects();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid)
+                && m.LastChangeCount == 0, "Refresh undid the single-component exit");
+        });
+        Check("A single-component child honours its parent's exit buffer", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, a);
+            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
+            d.Selection.Add(a);
+            c.Down(); a.Move(120); c.Up();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(a.InstanceGuid),
+                "child left before clearing the buffered parent boundary");
+            c.Down(); a.Move(150); c.Up();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(a.InstanceGuid),
+                "child failed to leave after clearing the buffer");
+        });
+        Check("A single selected leaf carries its nested subtree into and out of a group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var leaf = AddGroup(d, o);
+            var root = AddGroup(d, leaf);
+            var target = AddGroup(d, new Obj(400, -50), new Obj(600, 50));
+            d.Selection.Add(o);
+            c.Down(); o.Move(-500); c.Up();
+            Assert(target.ObjectIDs.Contains(root.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
+                && leaf.ObjectIDs.Contains(o.InstanceGuid) && !target.ObjectIDs.Contains(leaf.InstanceGuid)
+                && !target.ObjectIDs.Contains(o.InstanceGuid), "single-component transfer flattened the subtree");
+            c.Down(); o.Move(1000); c.Up();
+            Assert(!target.ObjectIDs.Contains(root.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
+                && leaf.ObjectIDs.Contains(o.InstanceGuid), "single-component exit damaged the subtree");
+        });
+        Check("A selected lone component transfers its group between siblings", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var member = new Obj(100);
+            var child = AddGroup(d, member);
+            var source = AddGroup(d, new Obj(0), new Obj(150), child);
+            var target = AddGroup(d, new Obj(200), new Obj(350));
+            var outer = AddGroup(d, source, target);
+            d.Selection.Add(member); c.Down(); member.Move(110); c.Up();
+            Assert(target.ObjectIDs.Contains(child.InstanceGuid) && !source.ObjectIDs.Contains(child.InstanceGuid)
+                && outer.ObjectIDs.Contains(source.InstanceGuid) && outer.ObjectIDs.Contains(target.InstanceGuid)
+                && child.ObjectIDs.Contains(member.InstanceGuid) && !target.ObjectIDs.Contains(member.InstanceGuid),
+                "single-component sibling transfer lost the group or its direct parent link");
+        });
+        Check("A carried lone component survives reconciliation of an unrelated external move", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, o);
+            a.Move(500);
+            d.Selection.Add(o);
+            c.Down(); o.Move(500); c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid),
+                "reconciling external movement emptied the carried single-component group");
+        });
+        Check("Single-component parent transfers survive Undo and Redo", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, o);
+            d.Selection.Add(o);
+            c.Down(); o.Move(-970); c.Up();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid),
+                "setup transfer failed");
+            o.Move(970); g.RemoveObject(child.InstanceGuid);
+            d.RaiseUndoStateChanged(GH_UndoOperation.Undo);
+            m.RefreshAllObjects();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid)
+                && m.LastChangeCount == 0, "Refresh undid the restored single-component layout");
+            o.Move(-970); g.AddObject(child.InstanceGuid);
+            d.RaiseUndoStateChanged(GH_UndoOperation.Redo);
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid)
+                && m.LastChangeCount == 0, "Refresh undid the restored single-component transfer");
+            c.Down(); o.Move(970); c.Up();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid),
+                "dragging after Redo lost the component's group or retained its parent");
+        });
+        Check("Single-component parent exits respect zero Exit Scale", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, a);
+            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
+            m.Configure(null, d, true, 0, false);
+            d.Selection.Add(a);
+            c.Down(); a.Move(100); c.Up();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(a.InstanceGuid),
+                "zero Exit Scale retained the parent or emptied the child's group");
+        });
+        Check("An unselected lone member does not implicitly carry its group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, o);
+            c.Down(); o.Move(500); c.Up();
+            Assert(!child.ObjectIDs.Contains(o.InstanceGuid),
+                "an unselected member was mistaken for a selected majority");
+        });
         Check("Single member dragged out is removed", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -445,6 +605,10 @@ class Program
         Check("Redo resets the boundary before a later member drag", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
+            // Leave two members after Redo so the later drag tests its boundary,
+            // rather than carrying the group with its only selected component.
+            var third = new Obj(120);
+            d.Add(third); g.AddObject(third.InstanceGuid);
             d.Selection.Add(a);
             c.Down(); a.Move(500); c.Up();
             Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "setup drag failed");
@@ -457,7 +621,8 @@ class Program
             d.Selection.Clear();
             d.Selection.Add(b);
             c.Down(); b.Move(-60); c.Up();
-            Assert(g.ObjectIDs.Count == 0, "member was retained by the group's pre-Redo boundary");
+            Assert(!g.ObjectIDs.Contains(b.InstanceGuid) && g.ObjectIDs.Contains(third.InstanceGuid),
+                "member was retained by the group's pre-Redo boundary");
         });
         Check("Undo stack notifications preserve pending external movement", () =>
         {
