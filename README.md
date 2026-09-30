@@ -105,7 +105,7 @@ Disabling the component, either through `Enabled` or Grasshopper's Disable comma
 
 Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history, including when membership is added with F6. Both F6 additions and drag destinations reject nesting a group inside its own descendant.
 
-When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Refresh after a manual addition establishes the boundary for later individual moves.
+When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Clicking a newly grouped selection preserves its manual memberships even over overlapping groups. New ungrouped objects still join the group at their placement point. Refresh after a manual addition establishes the boundary for later individual moves.
 
 Run the isolated membership regression checks with the .NET 10 SDK:
 

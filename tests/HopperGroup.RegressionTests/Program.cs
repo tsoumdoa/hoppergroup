@@ -55,14 +55,6 @@ class Program
     }
     static void Main()
     {
-        Check("Click does not change membership", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            d.Selection.Add(a);
-            c.Down();
-            c.Up();
-            Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0, "click mutated group");
-        });
         Check("Clicking a newly grouped lone component does not nest its group", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -94,30 +86,45 @@ class Program
                 && leaf.ObjectIDs.SequenceEqual(new[] { added.InstanceGuid }) && m.LastChangeCount == 0
                 && d.UndoServer.UndoCount == 0, "a stationary new leaf nested its subtree or created an undo record");
         });
-        Check("Stationary newly grouped selected components do not form a moving majority", () =>
+        foreach (var selectGroup in new[] { false, true })
+        {
+            Check($"Clicking newly grouped components preserves overlapping groups (group selected: {selectGroup})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var target = AddGroup(d, new Obj(270), new Obj(330));
+                var outer = AddGroup(d, g, target, new Obj(-100, -50), new Obj(450, 50));
+                var left = new Obj(30);
+                var right = new Obj(300);
+                var manual = AddGroup(d, left, right);
+                d.Selection.Add(left); d.Selection.Add(right);
+                if (selectGroup) d.Selection.Add(manual);
+                c.Down(); c.ClickUp();
+                Assert(manual.ObjectIDs.SequenceEqual(new[] { left.InstanceGuid, right.InstanceGuid })
+                    && !g.ObjectIDs.Contains(left.InstanceGuid) && !target.ObjectIDs.Contains(right.InstanceGuid)
+                    && !outer.ObjectIDs.Contains(manual.InstanceGuid)
+                    && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0 && !d.IsModified,
+                    "a click transferred stationary members into smaller groups or nested their group into the outer group");
+                d.Selection.Clear(); d.Selection.Add(left);
+                c.Down(); left.Move(1000); c.Up();
+                Assert(manual.ObjectIDs.SequenceEqual(new[] { right.InstanceGuid }),
+                    "preserving the click prevented a later individual member exit");
+            });
+        }
+        Check("New placement preserves stationary manual memberships in the same selection", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
-            var left = new Obj(20);
-            var right = new Obj(40);
-            var child = AddGroup(d, left, right);
+            var left = new Obj(30);
+            var right = new Obj(300);
+            var manual = AddGroup(d, left, right);
             d.Selection.Add(left); d.Selection.Add(right);
-            c.Down(); c.ClickUp();
-            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Count == 2
-                && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0,
-                "stationary selected components carried their group");
-        });
-        Check("Dragging the only selected component preserves its group", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            var child = AddGroup(d, o);
-            d.Selection.Add(o);
-            c.Down(); o.Move(500); c.Up();
-            Assert(child.ObjectIDs.SequenceEqual(new[] { o.InstanceGuid }) && d.Objects.Contains(child)
-                && m.GroupCount == 2 && m.LastChangeCount == 0,
-                "dragging the only component emptied its group");
-            m.RefreshAllObjects();
-            Assert(child.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 0,
-                "Refresh undid the single-component drag");
+            c.Down();
+            // A placement can arrive after mouse-down, with no movement snapshot.
+            var added = new Obj(40);
+            d.Add(added); d.Selection.Add(added); c.Up();
+            Assert(g.ObjectIDs.Contains(added.InstanceGuid) && !g.ObjectIDs.Contains(left.InstanceGuid)
+                && manual.ObjectIDs.SequenceEqual(new[] { left.InstanceGuid, right.InstanceGuid })
+                && m.LastChangeCount == 1 && d.UndoServer.UndoCount == 1,
+                "placement was skipped or reprocessed a stationary manually grouped component");
         });
         Check("The last remaining selected component carries its group", () =>
         {
@@ -129,23 +136,9 @@ class Program
             c.Down(); b.Move(1500); c.Up();
             Assert(g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }) && m.LastChangeCount == 0,
                 "the last remaining component emptied its group");
-        });
-        Check("Dragging the only component nests its group without flattening it", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            var child = AddGroup(d, o);
-            d.Selection.Add(o);
-            c.Down();
-            d.UndoServer.UndoNames.Insert(0, "Drag");
-            o.Move(-970); c.Up();
-            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && !g.ObjectIDs.Contains(o.InstanceGuid)
-                && child.ObjectIDs.SequenceEqual(new[] { o.InstanceGuid }),
-                "transfer replaced the single-component group with its component");
-            Assert(d.UndoServer.UndoCount == 1 && d.UndoServer.UndoNames[0] == "Drag",
-                "single-component transfer did not merge with the native drag undo");
             m.RefreshAllObjects();
-            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid)
-                && m.LastChangeCount == 0, "Refresh undid the nested transfer");
+            Assert(g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }) && m.LastChangeCount == 0,
+                "Refresh undid the single-component drag");
         });
         Check("A single-component group needs full enclosure before nesting", () =>
         {
@@ -159,20 +152,6 @@ class Program
             Assert(g.ObjectIDs.Contains(child.InstanceGuid) && !g.ObjectIDs.Contains(o.InstanceGuid)
                 && child.ObjectIDs.Contains(o.InstanceGuid), "fully enclosed group failed to nest");
         });
-        Check("Dragging the only component out releases its group from its parent", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            var child = AddGroup(d, a);
-            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
-            d.Selection.Add(a);
-            c.Down(); a.Move(500); c.Up();
-            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid)
-                && g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }),
-                "exit emptied the child or left its old parent link");
-            m.RefreshAllObjects();
-            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid)
-                && m.LastChangeCount == 0, "Refresh undid the single-component exit");
-        });
         Check("A single-component child honours its parent's exit buffer", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -183,8 +162,11 @@ class Program
             Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(a.InstanceGuid),
                 "child left before clearing the buffered parent boundary");
             c.Down(); a.Move(150); c.Up();
-            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(a.InstanceGuid),
+            Assert(g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }) && child.ObjectIDs.Contains(a.InstanceGuid),
                 "child failed to leave after clearing the buffer");
+            m.RefreshAllObjects();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid)
+                && m.LastChangeCount == 0, "Refresh undid the single-component exit");
         });
         Check("A single selected leaf carries its nested subtree into and out of a group", () =>
         {
@@ -230,9 +212,17 @@ class Program
             var (d, c, m, g, a, b, o) = Setup();
             var child = AddGroup(d, o);
             d.Selection.Add(o);
-            c.Down(); o.Move(-970); c.Up();
-            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid),
-                "setup transfer failed");
+            c.Down();
+            d.UndoServer.UndoNames.Insert(0, "Drag");
+            o.Move(-970); c.Up();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && !g.ObjectIDs.Contains(o.InstanceGuid)
+                && child.ObjectIDs.SequenceEqual(new[] { o.InstanceGuid }),
+                "transfer replaced the single-component group with its component");
+            Assert(d.UndoServer.UndoCount == 1 && d.UndoServer.UndoNames[0] == "Drag",
+                "single-component transfer did not merge with the native drag undo");
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid)
+                && m.LastChangeCount == 0, "Refresh undid the nested transfer");
             o.Move(970); g.RemoveObject(child.InstanceGuid);
             d.RaiseUndoStateChanged(GH_UndoOperation.Undo);
             m.RefreshAllObjects();
@@ -265,15 +255,6 @@ class Program
             c.Down(); o.Move(500); c.Up();
             Assert(!child.ObjectIDs.Contains(o.InstanceGuid),
                 "an unselected member was mistaken for a selected majority");
-        });
-        Check("Single member dragged out is removed", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            d.Selection.Add(a);
-            c.Down();
-            a.Move(500);
-            c.Up();
-            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "moved member retained");
         });
         Check("Small member near the group edge is retained", () =>
         {
@@ -380,13 +361,6 @@ class Program
             c.Up();
             Assert(g.ObjectIDs.Contains(o.InstanceGuid), "incoming member not added");
         });
-        Check("Keyboard/script move out then Refresh removes member", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            a.Move(500);
-            m.RefreshAllObjects();
-            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "Refresh retained moved-out member");
-        });
         Check("External move survives unrelated drag before Refresh", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -405,23 +379,16 @@ class Program
             m.RefreshAllObjects();
             Assert(g.ObjectIDs.Count == 2, "Refresh emptied translated group: " + g.ObjectIDs.Count + " members");
         });
-        Check("Native drag and memberships form one undo record", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            d.Selection.Add(a);
-            c.Down();
-            d.UndoServer.UndoNames.Insert(0, "Drag");
-            a.Move(500);
-            c.Up();
-            Assert(d.UndoServer.UndoCount == 1, "undo records: " + d.UndoServer.UndoCount);
-        });
         Check("Click preserves pending external movement for Refresh", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             a.Move(500);
+            d.Selection.Add(a);
             c.Down();
-            c.Up();
-            Assert(g.ObjectIDs.Contains(a.InstanceGuid), "click reconciled pending move");
+            c.ClickUp();
+            Assert(g.ObjectIDs.SequenceEqual(new[] { a.InstanceGuid, b.InstanceGuid })
+                && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0 && !d.IsModified,
+                "click reconciled pending movement or recorded an edit");
             m.RefreshAllObjects();
             Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "click lost pending move");
         });
@@ -453,11 +420,13 @@ class Program
             c.Up();
             Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "drag reset original boundary");
         });
-        Check("Refresh is idempotent after external movement", () =>
+        Check("Refresh applies external movement once without extra undo records", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             a.Move(500);
             m.RefreshAllObjects();
+            Assert(g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }) && m.LastChangeCount == 1,
+                "Refresh retained the moved-out member");
             var count = d.UndoServer.UndoCount;
             m.RefreshAllObjects();
             Assert(m.LastChangeCount == 0 && d.UndoServer.UndoCount == count, "second refresh mutated document");
@@ -502,21 +471,6 @@ class Program
             Assert(child.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(child.InstanceGuid)
              && g.ObjectIDs.Contains(b.InstanceGuid), "nested subtree changed membership");
         });
-        Check("Canvas-carried nested child escapes parent", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            var child = new GH_Group(d);
-            d.Add(child);
-            child.AddObject(a.InstanceGuid);
-            g.RemoveObject(a.InstanceGuid);
-            g.AddObject(child.InstanceGuid);
-            m.RefreshAllObjects();
-            d.Selection.Add(child);
-            c.Down();
-            a.Move(500);
-            c.Up();
-            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid), "nested drag failed");
-        });
         Check("Dragging members without selecting their group still releases them", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -542,12 +496,16 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             a.Move(500);
-            var added = new Obj(1200);
+            var added = new Obj(60);
             d.Add(added);
             d.Selection.Add(added);
             c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(added.InstanceGuid)
+                && g.ObjectIDs.Contains(b.InstanceGuid),
+                "placement skipped the new object or erased pending movement");
             m.RefreshAllObjects();
-            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "placement erased pending history");
+            Assert(g.ObjectIDs.Contains(added.InstanceGuid) && !g.ObjectIDs.Contains(a.InstanceGuid)
+                && m.LastChangeCount == 0, "Refresh changed the reconciled placement");
         });
         Check("Two-group transfer merges membership records with only the current drag", () =>
         {
@@ -1081,16 +1039,6 @@ class Program
             Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid),
                 "child drag damaged its own membership or kept the parent link");
         });
-        Check("F6 adds the captured selection after one group click", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            d.Selection.Add(o);
-            c.F6();
-            d.Selection.Clear(); d.Selection.Add(g);
-            c.Down(); c.ClickUp();
-            Assert(g.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 1,
-                "F6 did not add the captured object");
-        });
         Check("F6 does not add a group into its own descendant", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -1114,6 +1062,8 @@ class Program
             a.Move(500);
             d.Selection.Add(o); c.F6();
             d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
+            Assert(target.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 1,
+                "F6 did not add the captured object");
             m.RefreshAllObjects();
             Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "F6 erased unrelated pending external move; escaped member retained");
         });
