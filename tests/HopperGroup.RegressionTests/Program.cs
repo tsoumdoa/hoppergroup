@@ -63,6 +63,49 @@ class Program
             c.Up();
             Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0, "click mutated group");
         });
+        Check("Clicking a newly grouped lone component does not nest its group", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var added = new Obj(30);
+            var child = AddGroup(d, added);
+            d.Selection.Add(added);
+            var undoCount = d.UndoServer.UndoCount;
+            c.Down(); c.ClickUp();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && !g.ObjectIDs.Contains(added.InstanceGuid)
+                && child.ObjectIDs.SequenceEqual(new[] { added.InstanceGuid }) && m.LastChangeCount == 0
+                && d.UndoServer.UndoCount == undoCount && !d.IsModified,
+                "a stationary newly grouped component changed membership or created an undo record");
+            // The initial click must not prevent an actual later drag from carrying the group.
+            c.Down(); added.Move(5); c.Up();
+            Assert(g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
+                && !g.ObjectIDs.Contains(added.InstanceGuid), "a real drag after the click failed to carry the group");
+        });
+        Check("Clicking a newly grouped leaf does not nest its subtree", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var target = AddGroup(d, new Obj(400, -50), new Obj(600, 50));
+            var added = new Obj(500);
+            var leaf = AddGroup(d, added);
+            var root = AddGroup(d, leaf);
+            d.Selection.Add(added);
+            c.Down(); c.ClickUp();
+            Assert(!target.ObjectIDs.Contains(root.InstanceGuid) && !target.ObjectIDs.Contains(leaf.InstanceGuid)
+                && root.ObjectIDs.SequenceEqual(new[] { leaf.InstanceGuid })
+                && leaf.ObjectIDs.SequenceEqual(new[] { added.InstanceGuid }) && m.LastChangeCount == 0
+                && d.UndoServer.UndoCount == 0, "a stationary new leaf nested its subtree or created an undo record");
+        });
+        Check("Stationary newly grouped selected components do not form a moving majority", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var left = new Obj(20);
+            var right = new Obj(40);
+            var child = AddGroup(d, left, right);
+            d.Selection.Add(left); d.Selection.Add(right);
+            c.Down(); c.ClickUp();
+            Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Count == 2
+                && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0,
+                "stationary selected components carried their group");
+        });
         Check("Dragging the only selected component preserves its group", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();

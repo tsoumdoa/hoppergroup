@@ -1141,6 +1141,12 @@ namespace HopperGroup
                 }
 
                 var current = GetObjectCenter(obj);
+                // Newly added selections are processed even without movement.
+                // Placement alone must not count as carrying their existing group.
+                if (current == previous)
+                {
+                    continue;
+                }
                 translations.Add(new PointF(current.X - previous.X, current.Y - previous.Y));
             }
 
