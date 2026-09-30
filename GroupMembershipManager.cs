@@ -330,11 +330,11 @@ namespace HopperGroup
 
             var selection = _document.SelectedObjects();
             var selectedIds = new HashSet<Guid>(selection.Select(obj => obj.InstanceGuid));
-            var movedObjects = GetManagedObjects(_document.Objects)
-                .Where(obj => (_addedObjectIds.Contains(obj.InstanceGuid) && selectedIds.Contains(obj.InstanceGuid))
-                    || (_hasMouseDownSnapshot
-                        && _positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var previous)
-                        && previous != GetObjectCenter(obj)))
+            var managedObjects = GetManagedObjects(_document.Objects);
+            var movedObjects = managedObjects
+                .Where(obj => _hasMouseDownSnapshot
+                    && _positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var previous)
+                    && previous != GetObjectCenter(obj))
                 .ToList();
             var selectedGroups = new HashSet<Guid>(selection.OfType<GH_Group>().Select(group => group.InstanceGuid));
             var groupMoved = _hasMouseDownSnapshot && e.Location != _mouseDownLocation
@@ -343,10 +343,20 @@ namespace HopperGroup
                     && _groupBoundsAtMouseDown.TryGetValue(group.Id, out var previous)
                     && GetCurrentGroupBounds(group.Group) != previous);
             var selectionContext = CreateSelectionContext(movedObjects, selectedIds, selectedGroups);
+            // A placement alone cannot carry a group or replace manual membership.
+            // Only new, ungrouped selections need processing without actual movement.
+            var movedIds = new HashSet<Guid>(movedObjects.Select(obj => obj.InstanceGuid));
+            var groupedIds = new HashSet<Guid>(_document.Objects.OfType<GH_Group>()
+                .SelectMany(group => group.ObjectIDs));
+            var objectsToProcess = managedObjects
+                .Where(obj => movedIds.Contains(obj.InstanceGuid)
+                    || (_addedObjectIds.Contains(obj.InstanceGuid) && selectedIds.Contains(obj.InstanceGuid)
+                        && !groupedIds.Contains(obj.InstanceGuid)))
+                .ToList();
             var nativeDragWasRecorded = _hasMouseDownSnapshot
                 && _document.UndoServer.UndoCount == _undoCountAtMouseDown + 1
                 && _document.UndoServer.UndoNames.FirstOrDefault() == "Drag";
-            var pendingExternalIds = new HashSet<Guid>(GetManagedObjects(_document.Objects)
+            var pendingExternalIds = new HashSet<Guid>(managedObjects
                 .Where(obj => _settledObjectCenters.TryGetValue(obj.InstanceGuid, out var settled)
                     && settled != (_positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var atMouseDown)
                         ? atMouseDown
@@ -357,12 +367,12 @@ namespace HopperGroup
                 : null;
             ClearDragState();
 
-            if (movedObjects.Count == 0 && !groupMoved)
+            if (objectsToProcess.Count == 0 && !groupMoved)
             {
                 return;
             }
 
-            ProcessObjects(movedObjects, refreshCache: groupMoved, expireOwner: true,
+            ProcessObjects(objectsToProcess, refreshCache: groupMoved, expireOwner: true,
                 selectionContext: selectionContext, mergeWithNativeDrag: nativeDragWasRecorded,
                 reconcileExternalMoves: pendingExternalIds.Count > 0, externalObjectIds: pendingExternalIds,
                 externalSnapshot: externalSnapshot);
@@ -1029,6 +1039,8 @@ namespace HopperGroup
             // Dragging a component moves the selected components, even when Grasshopper
             // does not include their group in SelectedObjects. Keep a group together
             // when a strict majority of its components moved by the same amount.
+            // A group's only component is also a majority: carry its group rather
+            // than emptying it or flattening it into a destination group.
             foreach (var group in _groups)
             {
                 if (HasMovingSelectedMajority(group.Group, selectedIds, movedIds, objectsById))
@@ -1123,7 +1135,7 @@ namespace HopperGroup
         {
             var members = new HashSet<Guid>();
             CollectLeafMembers(group, objectsById, new HashSet<Guid>(), members);
-            if (members.Count < 2)
+            if (members.Count == 0)
             {
                 return false;
             }
