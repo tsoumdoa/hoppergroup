@@ -63,6 +63,7 @@ namespace Grasshopper.Kernel
     {
         private RectangleF bounds;
         public Func<RectangleF> Compute;
+        public PointF Pivot { get; set; }
         public RectangleF Bounds
         {
             get => Compute == null ? bounds : Compute();
@@ -102,10 +103,12 @@ namespace Grasshopper.Kernel
         public string NickName => Name;
         public Obj(float x = 0, float y = 0)
         {
+            Attributes.Pivot = new PointF(x, y);
             Attributes.Bounds = new RectangleF(x, y, 10, 10);
         }
         public void Move(float dx)
         {
+            Attributes.Pivot = new PointF(Attributes.Pivot.X + dx, Attributes.Pivot.Y);
             var r = Attributes.Bounds;
             r.Offset(dx, 0);
             Attributes.Bounds = r;
@@ -175,6 +178,11 @@ namespace Grasshopper.Kernel
 }
 namespace Grasshopper.Kernel.Special
 {
+    public class GH_Scribble : Obj
+    {
+        public GH_Scribble(float x = 0, float y = 0) : base(x, y) { }
+    }
+
     public class GH_Group : Obj
     {
         public List<Guid> ObjectIDs = new();
@@ -184,7 +192,8 @@ namespace Grasshopper.Kernel.Special
             Document = d;
             Attributes.Compute = () =>
             {
-                var members = d.Objects.Where(o => ObjectIDs.Contains(o.InstanceGuid)).ToList();
+                var members = d.Objects.Where(o => ObjectIDs.Contains(o.InstanceGuid)
+                    && o.Attributes.Bounds.Width > 0 && o.Attributes.Bounds.Height > 0).ToList();
                 if (members.Count == 0) return RectangleF.Empty;
                 var b = members[0].Attributes.Bounds;
                 foreach (var m in members.Skip(1)) b = RectangleF.Union(b, m.Attributes.Bounds);

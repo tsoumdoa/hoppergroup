@@ -38,10 +38,10 @@ class Program
         document.Add(group);
         return group;
     }
-    static (GH_Document, GH_Canvas, GroupMembershipManager, GH_Group, Obj, Obj, Obj) Setup()
+    static (GH_Document, GH_Canvas, GroupMembershipManager, GH_Group, Obj, Obj, Obj) Setup(bool scribbleMember = false)
     {
         var d = new GH_Document();
-        Obj a = new Obj(0), b = new Obj(60), other = new Obj(1000);
+        Obj a = new Obj(0), b = scribbleMember ? new GH_Scribble(60) : new Obj(60), other = new Obj(1000);
         d.Objects.AddRange(new IGH_DocumentObject[] { a, b, other });
         var g = new GH_Group(d);
         d.Objects.Add(g);
@@ -296,6 +296,203 @@ class Program
             c.Up();
             Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
                 "component drag removed members from their moving group");
+        });
+        Check("A selected group with an empty nested group keeps its moving members", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var empty = AddGroup(d);
+            g.AddObject(empty.InstanceGuid);
+            d.Selection.Add(g);
+            c.Down(); a.Move(500); b.Move(500); c.Up();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(empty.InstanceGuid) && m.LastChangeCount == 0,
+                "an empty descendant made the moving components fall out of their selected group");
+        });
+        Check("A selected group ignores members without usable canvas bounds when detecting a carry", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var invisible = new Obj { Attributes = { Bounds = RectangleF.Empty } };
+            d.Add(invisible); g.AddObject(invisible.InstanceGuid);
+            d.Selection.Add(g);
+            c.Down(); a.Move(500); b.Move(500); invisible.Move(500); c.Up();
+            Assert(g.ObjectIDs.Count == 3 && m.LastChangeCount == 0,
+                "a member excluded from movement tracking invalidated the carried group");
+        });
+        Check("Component layout changes during a selected drag do not break group carrying", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a); d.Selection.Add(b);
+            c.Down(); a.Move(500); b.Move(500);
+            var bounds = a.Attributes.Bounds;
+            bounds.Width += 30;
+            a.Attributes.Bounds = bounds;
+            c.Up();
+            Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
+                "a layout change was mistaken for independent component movement");
+        });
+        Check("Canvas rounding during a selected drag does not break group carrying", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a); d.Selection.Add(b);
+            c.Down(); a.Move(500); b.Move(500.4f); c.Up();
+            Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
+                "sub-unit layout rounding caused moving components to fall out");
+        });
+        foreach (var nested in new[] { false, true })
+        {
+            foreach (var pendingExternalMove in new[] { false, true })
+            {
+                Check($"A group-title drag keeps members rounded to zero movement (nested: {nested}, external: {pendingExternalMove})", () =>
+                {
+                    var (d, c, m, g, a, b, o) = Setup(scribbleMember: true);
+                    var overlapping = AddGroup(d, new Obj(60));
+                    var selectedGroup = nested ? AddGroup(d, g) : g;
+                    d.Selection.Add(selectedGroup);
+                    if (pendingExternalMove) o.Move(500);
+                    c.Down();
+                    // A component layout rounds the shared delta to zero; a scribble
+                    // can keep its fractional pivot after the same native group drag.
+                    b.Move(0.4f);
+                    c.Up();
+                    Assert(g.ObjectIDs.SequenceEqual(new[] { a.InstanceGuid, b.InstanceGuid })
+                        && !overlapping.ObjectIDs.Contains(b.InstanceGuid)
+                        && (!nested || selectedGroup.ObjectIDs.SequenceEqual(new[] { g.InstanceGuid }))
+                        && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0,
+                        "a zero-rounded member invalidated group carrying and let an overlap steal another member");
+                });
+            }
+        }
+        Check("A layout-only change during a click does not detach a stationary component", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var overlapping = AddGroup(d, new Obj(25));
+            d.Selection.Add(a);
+            c.Down();
+            var bounds = a.Attributes.Bounds;
+            bounds.Width += 30;
+            a.Attributes.Bounds = bounds;
+            c.ClickUp();
+            Assert(g.ObjectIDs.Count == 2 && !overlapping.ObjectIDs.Contains(a.InstanceGuid)
+                && d.UndoServer.UndoCount == 0,
+                "a stationary pivot was processed as a member drag");
+            d.Selection.Clear(); d.Selection.Add(o);
+            c.Down(); o.Move(10); c.Up();
+            Assert(g.ObjectIDs.Count == 2 && !overlapping.ObjectIDs.Contains(a.InstanceGuid)
+                && d.UndoServer.UndoCount == 0,
+                "the layout change was replayed as external movement on the next drag");
+        });
+        Check("Rotating a scribble in place does not transfer its membership", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var scribble = new GH_Scribble(60);
+            d.Add(scribble); g.AddObject(scribble.InstanceGuid);
+            var overlapping = AddGroup(d, new Obj(60));
+            d.Selection.Add(scribble);
+            c.Down();
+            // Native scribble Pivot is corner A. A half-turn changes that corner
+            // while leaving the center and the axis-aligned bounds unchanged.
+            scribble.Attributes.Pivot = new PointF(70, 10);
+            c.Up();
+            Assert(g.ObjectIDs.Contains(scribble.InstanceGuid)
+                && !overlapping.ObjectIDs.Contains(scribble.InstanceGuid)
+                && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0,
+                "scribble rotation was mistaken for a drag into the overlapping group");
+            d.Selection.Clear(); d.Selection.Add(o);
+            c.Down(); o.Move(10); c.Up();
+            Assert(g.ObjectIDs.Contains(scribble.InstanceGuid)
+                && !overlapping.ObjectIDs.Contains(scribble.InstanceGuid)
+                && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0,
+                "scribble rotation was replayed as external movement on the next drag");
+        });
+        foreach (var external in new[] { false, true })
+        {
+            Check($"A translated scribble still leaves its group (external: {external})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var scribble = new GH_Scribble(30);
+                d.Add(scribble); g.AddObject(scribble.InstanceGuid);
+                m.Configure(null, d, false, 1, false);
+                m.Configure(null, d, true, 1, false);
+                if (!external)
+                {
+                    d.Selection.Add(scribble);
+                    c.Down();
+                }
+                scribble.Move(500);
+                if (external) m.RefreshAllObjects(); else c.Up();
+                Assert(!g.ObjectIDs.Contains(scribble.InstanceGuid)
+                    && g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                    && m.LastChangeCount == 1,
+                    "ignoring scribble rotation also ignored a real translation");
+            });
+        }
+        Check("An empty nested group does not prevent an individual member from leaving", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var empty = AddGroup(d);
+            g.AddObject(empty.InstanceGuid);
+            d.Selection.Add(g);
+            c.Down(); a.Move(500); c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(empty.InstanceGuid) && m.LastChangeCount == 1,
+                "ignoring an empty descendant protected a real individual exit");
+        });
+        foreach (var reconcileOnDrop in new[] { false, true })
+        {
+            Check($"External group carrying tolerates layout changes and rounding (drop: {reconcileOnDrop})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                a.Move(500); b.Move(500.4f);
+                var bounds = a.Attributes.Bounds;
+                bounds.Width += 30;
+                a.Attributes.Bounds = bounds;
+                if (reconcileOnDrop)
+                {
+                    d.Selection.Add(o);
+                    c.Down(); o.Move(10); c.Up();
+                }
+                else
+                {
+                    m.RefreshAllObjects();
+                }
+                Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
+                    "external reconciliation detached members with matching pivot movement");
+            });
+            Check($"External group carrying ignores empty descendants and unusable bounds (drop: {reconcileOnDrop})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var invisible = new Obj { Attributes = { Bounds = RectangleF.Empty } };
+                var child = AddGroup(d, invisible);
+                g.AddObject(child.InstanceGuid);
+                m.Configure(null, d, false, 1, false);
+                m.Configure(null, d, true, 1, false);
+                a.Move(500); b.Move(500); invisible.Move(500);
+                if (reconcileOnDrop)
+                {
+                    d.Selection.Add(o);
+                    c.Down(); o.Move(10); c.Up();
+                }
+                else
+                {
+                    m.RefreshAllObjects();
+                }
+                Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                    && g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(invisible.InstanceGuid)
+                    && m.LastChangeCount == 0,
+                    "an untracked descendant invalidated external carrying");
+            });
+        }
+        Check("A carried group with empty descendants preserves its subtree when leaving its parent", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var empty = AddGroup(d);
+            var child = AddGroup(d, a, empty);
+            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
+            d.Selection.Add(child);
+            c.Down(); a.Move(500); c.Up();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(empty.InstanceGuid)
+                && g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }) && m.LastChangeCount == 1,
+                "leaving the parent detached the child's members or kept the old parent link");
         });
         Check("A coherent selected majority carries its group", () =>
         {
