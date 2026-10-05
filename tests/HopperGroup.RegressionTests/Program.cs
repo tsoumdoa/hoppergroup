@@ -38,10 +38,10 @@ class Program
         document.Add(group);
         return group;
     }
-    static (GH_Document, GH_Canvas, GroupMembershipManager, GH_Group, Obj, Obj, Obj) Setup()
+    static (GH_Document, GH_Canvas, GroupMembershipManager, GH_Group, Obj, Obj, Obj) Setup(bool scribbleMember = false)
     {
         var d = new GH_Document();
-        Obj a = new Obj(0), b = new Obj(60), other = new Obj(1000);
+        Obj a = new Obj(0), b = scribbleMember ? new GH_Scribble(60) : new Obj(60), other = new Obj(1000);
         d.Objects.AddRange(new IGH_DocumentObject[] { a, b, other });
         var g = new GH_Group(d);
         d.Objects.Add(g);
@@ -338,6 +338,30 @@ class Program
             Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
                 "sub-unit layout rounding caused moving components to fall out");
         });
+        foreach (var nested in new[] { false, true })
+        {
+            foreach (var pendingExternalMove in new[] { false, true })
+            {
+                Check($"A group-title drag keeps members rounded to zero movement (nested: {nested}, external: {pendingExternalMove})", () =>
+                {
+                    var (d, c, m, g, a, b, o) = Setup(scribbleMember: true);
+                    var overlapping = AddGroup(d, new Obj(60));
+                    var selectedGroup = nested ? AddGroup(d, g) : g;
+                    d.Selection.Add(selectedGroup);
+                    if (pendingExternalMove) o.Move(500);
+                    c.Down();
+                    // A component layout rounds the shared delta to zero; a scribble
+                    // can keep its fractional pivot after the same native group drag.
+                    b.Move(0.4f);
+                    c.Up();
+                    Assert(g.ObjectIDs.SequenceEqual(new[] { a.InstanceGuid, b.InstanceGuid })
+                        && !overlapping.ObjectIDs.Contains(b.InstanceGuid)
+                        && (!nested || selectedGroup.ObjectIDs.SequenceEqual(new[] { g.InstanceGuid }))
+                        && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0,
+                        "a zero-rounded member invalidated group carrying and let an overlap steal another member");
+                });
+            }
+        }
         Check("A layout-only change during a click does not detach a stationary component", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -357,6 +381,51 @@ class Program
                 && d.UndoServer.UndoCount == 0,
                 "the layout change was replayed as external movement on the next drag");
         });
+        Check("Rotating a scribble in place does not transfer its membership", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var scribble = new GH_Scribble(60);
+            d.Add(scribble); g.AddObject(scribble.InstanceGuid);
+            var overlapping = AddGroup(d, new Obj(60));
+            d.Selection.Add(scribble);
+            c.Down();
+            // Native scribble Pivot is corner A. A half-turn changes that corner
+            // while leaving the center and the axis-aligned bounds unchanged.
+            scribble.Attributes.Pivot = new PointF(70, 10);
+            c.Up();
+            Assert(g.ObjectIDs.Contains(scribble.InstanceGuid)
+                && !overlapping.ObjectIDs.Contains(scribble.InstanceGuid)
+                && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0,
+                "scribble rotation was mistaken for a drag into the overlapping group");
+            d.Selection.Clear(); d.Selection.Add(o);
+            c.Down(); o.Move(10); c.Up();
+            Assert(g.ObjectIDs.Contains(scribble.InstanceGuid)
+                && !overlapping.ObjectIDs.Contains(scribble.InstanceGuid)
+                && m.LastChangeCount == 0 && d.UndoServer.UndoCount == 0,
+                "scribble rotation was replayed as external movement on the next drag");
+        });
+        foreach (var external in new[] { false, true })
+        {
+            Check($"A translated scribble still leaves its group (external: {external})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var scribble = new GH_Scribble(30);
+                d.Add(scribble); g.AddObject(scribble.InstanceGuid);
+                m.Configure(null, d, false, 1, false);
+                m.Configure(null, d, true, 1, false);
+                if (!external)
+                {
+                    d.Selection.Add(scribble);
+                    c.Down();
+                }
+                scribble.Move(500);
+                if (external) m.RefreshAllObjects(); else c.Up();
+                Assert(!g.ObjectIDs.Contains(scribble.InstanceGuid)
+                    && g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                    && m.LastChangeCount == 1,
+                    "ignoring scribble rotation also ignored a real translation");
+            });
+        }
         Check("An empty nested group does not prevent an individual member from leaving", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();

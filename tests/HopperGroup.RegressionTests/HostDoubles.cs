@@ -178,6 +178,11 @@ namespace Grasshopper.Kernel
 }
 namespace Grasshopper.Kernel.Special
 {
+    public class GH_Scribble : Obj
+    {
+        public GH_Scribble(float x = 0, float y = 0) : base(x, y) { }
+    }
+
     public class GH_Group : Obj
     {
         public List<Guid> ObjectIDs = new();
