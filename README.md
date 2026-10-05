@@ -66,7 +66,7 @@ Close Rhino before rebuilding if the plugin is loaded.
 Create a local Yak package with:
 
 ```bash
-./scripts/release-yak.sh 0.2.3
+./scripts/release-yak.sh 0.2.4
 ```
 
 The script updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`.
@@ -80,13 +80,13 @@ If this is your first Yak publish from this machine, log in first:
 To rehearse publishing on McNeel's daily-wiped test server:
 
 ```bash
-./scripts/release-yak.sh 0.2.3-beta.1 --push-test
+./scripts/release-yak.sh 0.2.4-beta.1 --push-test
 ```
 
 To publish to the public Yak server:
 
 ```bash
-./scripts/release-yak.sh 0.2.3 --push-public
+./scripts/release-yak.sh 0.2.4 --push-public
 ```
 
 Close Rhino before rebuilding if the plugin is loaded. Public Yak package versions cannot be overwritten after publishing; bump the version if a pushed release is wrong. Generated release artifacts live under `artifacts/yak/` and are ignored by git.
