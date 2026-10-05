@@ -13,13 +13,15 @@ namespace HopperGroup
 {
     internal sealed class GroupMembershipManager : IDisposable
     {
+        // Grasshopper layouts can round pivots to whole canvas units independently.
+        private const float TranslationTolerance = 1f;
         private readonly List<GroupRegion> _groups = new List<GroupRegion>();
         private readonly Dictionary<Guid, Guid> _parentByChild = new Dictionary<Guid, Guid>();
-        private readonly Dictionary<Guid, PointF> _positionsAtMouseDown = new Dictionary<Guid, PointF>();
+        private readonly Dictionary<Guid, PointF> _pivotsAtMouseDown = new Dictionary<Guid, PointF>();
         private readonly Dictionary<Guid, RectangleF> _groupBoundsAtMouseDown = new Dictionary<Guid, RectangleF>();
         private readonly Dictionary<Guid, RectangleF> _settledGroupBounds = new Dictionary<Guid, RectangleF>();
         private readonly Dictionary<Guid, HashSet<Guid>> _settledGroupMembers = new Dictionary<Guid, HashSet<Guid>>();
-        private readonly Dictionary<Guid, PointF> _settledObjectCenters = new Dictionary<Guid, PointF>();
+        private readonly Dictionary<Guid, PointF> _settledObjectPivots = new Dictionary<Guid, PointF>();
         private readonly HashSet<Guid> _newObjectIdsSinceSettled = new HashSet<Guid>();
         private readonly HashSet<Guid> _addedObjectIds = new HashSet<Guid>();
         private readonly HashSet<Guid> _shortcutObjectIds = new HashSet<Guid>();
@@ -232,7 +234,7 @@ namespace HopperGroup
                 _addedObjectIds.Add(obj.InstanceGuid);
                 if (_hasSettledLayout && IsManagedObject(obj))
                 {
-                    _settledObjectCenters[obj.InstanceGuid] = GetObjectCenter(obj);
+                    _settledObjectPivots[obj.InstanceGuid] = obj.Attributes.Pivot;
                     _newObjectIdsSinceSettled.Add(obj.InstanceGuid);
                 }
             }
@@ -250,8 +252,8 @@ namespace HopperGroup
             foreach (var obj in e.Objects)
             {
                 _addedObjectIds.Remove(obj.InstanceGuid);
-                _positionsAtMouseDown.Remove(obj.InstanceGuid);
-                _settledObjectCenters.Remove(obj.InstanceGuid);
+                _pivotsAtMouseDown.Remove(obj.InstanceGuid);
+                _settledObjectPivots.Remove(obj.InstanceGuid);
                 _newObjectIdsSinceSettled.Remove(obj.InstanceGuid);
                 _shortcutObjectIds.Remove(obj.InstanceGuid);
                 _settledGroupBounds.Remove(obj.InstanceGuid);
@@ -286,10 +288,12 @@ namespace HopperGroup
             }
 
             RebuildGroupCache();
-            _positionsAtMouseDown.Clear();
+            _pivotsAtMouseDown.Clear();
             foreach (var obj in GetManagedObjects(_document.Objects))
             {
-                _positionsAtMouseDown[obj.InstanceGuid] = GetObjectCenter(obj);
+                // The host drags pivots. Bounds can resize during layout without moving
+                // the object, so their centers are only suitable for containment tests.
+                _pivotsAtMouseDown[obj.InstanceGuid] = obj.Attributes.Pivot;
             }
 
             _groupBoundsAtMouseDown.Clear();
@@ -333,8 +337,8 @@ namespace HopperGroup
             var managedObjects = GetManagedObjects(_document.Objects);
             var movedObjects = managedObjects
                 .Where(obj => _hasMouseDownSnapshot
-                    && _positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var previous)
-                    && previous != GetObjectCenter(obj))
+                    && _pivotsAtMouseDown.TryGetValue(obj.InstanceGuid, out var previous)
+                    && previous != obj.Attributes.Pivot)
                 .ToList();
             var selectedGroups = new HashSet<Guid>(selection.OfType<GH_Group>().Select(group => group.InstanceGuid));
             var groupMoved = _hasMouseDownSnapshot && e.Location != _mouseDownLocation
@@ -357,13 +361,13 @@ namespace HopperGroup
                 && _document.UndoServer.UndoCount == _undoCountAtMouseDown + 1
                 && _document.UndoServer.UndoNames.FirstOrDefault() == "Drag";
             var pendingExternalIds = new HashSet<Guid>(managedObjects
-                .Where(obj => _settledObjectCenters.TryGetValue(obj.InstanceGuid, out var settled)
-                    && settled != (_positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var atMouseDown)
+                .Where(obj => _settledObjectPivots.TryGetValue(obj.InstanceGuid, out var settled)
+                    && settled != (_pivotsAtMouseDown.TryGetValue(obj.InstanceGuid, out var atMouseDown)
                         ? atMouseDown
-                        : GetObjectCenter(obj)))
+                        : obj.Attributes.Pivot))
                 .Select(obj => obj.InstanceGuid));
             var externalSnapshot = pendingExternalIds.Count > 0 && _hasMouseDownSnapshot
-                ? new MovementSnapshot(_positionsAtMouseDown, _groupBoundsAtMouseDown)
+                ? new MovementSnapshot(_pivotsAtMouseDown, _groupBoundsAtMouseDown)
                 : null;
             ClearDragState();
 
@@ -477,7 +481,7 @@ namespace HopperGroup
 
         private void ClearDragState()
         {
-            _positionsAtMouseDown.Clear();
+            _pivotsAtMouseDown.Clear();
             _groupBoundsAtMouseDown.Clear();
             _addedObjectIds.Clear();
             _hasMouseDownSnapshot = false;
@@ -488,7 +492,7 @@ namespace HopperGroup
         {
             _settledGroupBounds.Clear();
             _settledGroupMembers.Clear();
-            _settledObjectCenters.Clear();
+            _settledObjectPivots.Clear();
             _newObjectIdsSinceSettled.Clear();
             _hasSettledLayout = false;
         }
@@ -503,10 +507,10 @@ namespace HopperGroup
                 _settledGroupMembers[group.Id] = new HashSet<Guid>(group.Group.ObjectIDs);
             }
 
-            _settledObjectCenters.Clear();
+            _settledObjectPivots.Clear();
             foreach (var obj in GetManagedObjects(_document.Objects))
             {
-                _settledObjectCenters[obj.InstanceGuid] = GetObjectCenter(obj);
+                _settledObjectPivots[obj.InstanceGuid] = obj.Attributes.Pivot;
             }
 
             _newObjectIdsSinceSettled.Clear();
@@ -594,16 +598,16 @@ namespace HopperGroup
                         settled = childBounds;
                     }
                 }
-                // For a new member, use its add-time center only when the whole group
+                // For a new member, use its add-time pivot only when the whole group
                 // translated. Otherwise preserve the manual membership at its current
                 // position; Grasshopper does not report when that membership was edited.
                 else if (((previousMembers != null && previousMembers.Contains(memberId))
                         || (_newObjectIdsSinceSettled.Contains(memberId)
                             && externalContext.IsCarriedGroup(id)))
-                    && _settledObjectCenters.TryGetValue(memberId, out var center))
+                    && _settledObjectPivots.TryGetValue(memberId, out var pivot))
                 {
-                    settled.Offset(center.X - (current.Left + current.Width * 0.5f),
-                        center.Y - (current.Top + current.Height * 0.5f));
+                    settled.Offset(pivot.X - member.Attributes.Pivot.X,
+                        pivot.Y - member.Attributes.Pivot.Y);
                 }
 
                 if (current.Width > 0f && current.Height > 0f)
@@ -692,39 +696,44 @@ namespace HopperGroup
             {
                 // A member added after the last settled layout did not take part in
                 // the group's earlier move, even if it was added at the destination.
-                if (!settledMembers.Contains(id))
+                if (!settledMembers.Contains(id) || !objectsById.TryGetValue(id, out var obj))
                 {
                     continue;
                 }
 
                 PointF? memberTranslation = null;
-                if (objectsById.TryGetValue(id, out var obj))
+                if (obj is GH_Group child)
                 {
-                    if (obj is GH_Group child)
+                    var members = new HashSet<Guid>();
+                    CollectLeafMembers(child, objectsById, new HashSet<Guid>(), members);
+                    if (members.Count == 0)
                     {
-                        memberTranslation = GetGroupTranslation(child, eligibleIds, objectsById,
-                            translations, visiting, snapshot);
+                        continue;
                     }
-                    else if (eligibleIds.Contains(id) && IsManagedObject(obj)
-                        && _settledObjectCenters.TryGetValue(id, out var previous))
-                    {
-                        var center = snapshot != null && snapshot.ObjectCenters.TryGetValue(id, out var atMouseDown)
-                            ? atMouseDown
-                            : GetObjectCenter(obj);
-                        memberTranslation = new PointF(center.X - previous.X, center.Y - previous.Y);
-                    }
+                    memberTranslation = GetGroupTranslation(child, eligibleIds, objectsById,
+                        translations, visiting, snapshot);
+                }
+                else if (!IsManagedObject(obj))
+                {
+                    continue;
+                }
+                else if (eligibleIds.Contains(id) && _settledObjectPivots.TryGetValue(id, out var previous))
+                {
+                    var pivot = snapshot != null && snapshot.ObjectPivots.TryGetValue(id, out var atMouseDown)
+                        ? atMouseDown
+                        : obj.Attributes.Pivot;
+                    memberTranslation = new PointF(pivot.X - previous.X, pivot.Y - previous.Y);
                 }
 
                 if (!memberTranslation.HasValue || memberTranslation.Value == PointF.Empty
                     || (translation.HasValue
-                        && (Math.Abs(translation.Value.X - memberTranslation.Value.X) > 0.01f
-                            || Math.Abs(translation.Value.Y - memberTranslation.Value.Y) > 0.01f)))
+                        && !TranslationsMatch(translation.Value, memberTranslation.Value)))
                 {
                     translation = null;
                     break;
                 }
 
-                translation = memberTranslation;
+                translation = translation ?? memberTranslation;
             }
 
             visiting.Remove(group.InstanceGuid);
@@ -754,8 +763,8 @@ namespace HopperGroup
                 {
                     var externallyMoved = GetManagedObjects(_document.Objects)
                         .Where(obj => (externalObjectIds != null && externalObjectIds.Contains(obj.InstanceGuid))
-                            || (_settledObjectCenters.TryGetValue(obj.InstanceGuid, out var previous)
-                                && previous != GetObjectCenter(obj)))
+                            || (_settledObjectPivots.TryGetValue(obj.InstanceGuid, out var previous)
+                                && previous != obj.Attributes.Pivot))
                         .ToList();
 
                     if (externallyMoved.Count > 0)
@@ -1088,7 +1097,7 @@ namespace HopperGroup
             Dictionary<Guid, bool> completeGroups,
             HashSet<Guid> visiting)
         {
-            if (group == null || group.ObjectIDs.Count == 0)
+            if (group == null)
             {
                 return false;
             }
@@ -1122,12 +1131,14 @@ namespace HopperGroup
         {
             if (!objectsById.TryGetValue(objectId, out var obj))
             {
-                return false;
+                return true;
             }
 
+            // Empty descendants and objects without usable bounds do not participate
+            // in movement tracking; they must not veto a carry of the visible members.
             return obj is GH_Group childGroup
                 ? IsCompleteSelectedGroup(childGroup, selectedIds, objectsById, completeGroups, visiting)
-                : IsManagedObject(obj) && selectedIds.Contains(objectId);
+                : !IsManagedObject(obj) || selectedIds.Contains(objectId);
         }
 
         private bool HasMovingSelectedMajority(GH_Group group, HashSet<Guid> selectedIds,
@@ -1144,13 +1155,13 @@ namespace HopperGroup
             foreach (var id in members)
             {
                 if (!selectedIds.Contains(id) || !movedIds.Contains(id)
-                    || !_positionsAtMouseDown.TryGetValue(id, out var previous)
+                    || !_pivotsAtMouseDown.TryGetValue(id, out var previous)
                     || !objectsById.TryGetValue(id, out var obj))
                 {
                     continue;
                 }
 
-                var current = GetObjectCenter(obj);
+                var current = obj.Attributes.Pivot;
                 translations.Add(new PointF(current.X - previous.X, current.Y - previous.Y));
             }
 
@@ -1160,8 +1171,13 @@ namespace HopperGroup
             }
 
             return translations.Any(translation => translations.Count(other =>
-                Math.Abs(translation.X - other.X) <= 0.01f
-                && Math.Abs(translation.Y - other.Y) <= 0.01f) > members.Count / 2);
+                TranslationsMatch(translation, other)) > members.Count / 2);
+        }
+
+        private static bool TranslationsMatch(PointF left, PointF right)
+        {
+            return Math.Abs(left.X - right.X) <= TranslationTolerance
+                && Math.Abs(left.Y - right.Y) <= TranslationTolerance;
         }
 
         private static void CollectLeafMembers(GH_Group group,
@@ -1354,13 +1370,13 @@ namespace HopperGroup
 
         private sealed class MovementSnapshot
         {
-            public MovementSnapshot(Dictionary<Guid, PointF> objectCenters, Dictionary<Guid, RectangleF> groupBounds)
+            public MovementSnapshot(Dictionary<Guid, PointF> objectPivots, Dictionary<Guid, RectangleF> groupBounds)
             {
-                ObjectCenters = new Dictionary<Guid, PointF>(objectCenters);
+                ObjectPivots = new Dictionary<Guid, PointF>(objectPivots);
                 GroupBounds = new Dictionary<Guid, RectangleF>(groupBounds);
             }
 
-            public Dictionary<Guid, PointF> ObjectCenters { get; }
+            public Dictionary<Guid, PointF> ObjectPivots { get; }
             public Dictionary<Guid, RectangleF> GroupBounds { get; }
         }
 

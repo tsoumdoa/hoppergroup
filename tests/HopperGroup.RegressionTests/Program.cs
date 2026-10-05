@@ -297,6 +297,134 @@ class Program
             Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
                 "component drag removed members from their moving group");
         });
+        Check("A selected group with an empty nested group keeps its moving members", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var empty = AddGroup(d);
+            g.AddObject(empty.InstanceGuid);
+            d.Selection.Add(g);
+            c.Down(); a.Move(500); b.Move(500); c.Up();
+            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(empty.InstanceGuid) && m.LastChangeCount == 0,
+                "an empty descendant made the moving components fall out of their selected group");
+        });
+        Check("A selected group ignores members without usable canvas bounds when detecting a carry", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var invisible = new Obj { Attributes = { Bounds = RectangleF.Empty } };
+            d.Add(invisible); g.AddObject(invisible.InstanceGuid);
+            d.Selection.Add(g);
+            c.Down(); a.Move(500); b.Move(500); invisible.Move(500); c.Up();
+            Assert(g.ObjectIDs.Count == 3 && m.LastChangeCount == 0,
+                "a member excluded from movement tracking invalidated the carried group");
+        });
+        Check("Component layout changes during a selected drag do not break group carrying", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a); d.Selection.Add(b);
+            c.Down(); a.Move(500); b.Move(500);
+            var bounds = a.Attributes.Bounds;
+            bounds.Width += 30;
+            a.Attributes.Bounds = bounds;
+            c.Up();
+            Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
+                "a layout change was mistaken for independent component movement");
+        });
+        Check("Canvas rounding during a selected drag does not break group carrying", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(a); d.Selection.Add(b);
+            c.Down(); a.Move(500); b.Move(500.4f); c.Up();
+            Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
+                "sub-unit layout rounding caused moving components to fall out");
+        });
+        Check("A layout-only change during a click does not detach a stationary component", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var overlapping = AddGroup(d, new Obj(25));
+            d.Selection.Add(a);
+            c.Down();
+            var bounds = a.Attributes.Bounds;
+            bounds.Width += 30;
+            a.Attributes.Bounds = bounds;
+            c.ClickUp();
+            Assert(g.ObjectIDs.Count == 2 && !overlapping.ObjectIDs.Contains(a.InstanceGuid)
+                && d.UndoServer.UndoCount == 0,
+                "a stationary pivot was processed as a member drag");
+            d.Selection.Clear(); d.Selection.Add(o);
+            c.Down(); o.Move(10); c.Up();
+            Assert(g.ObjectIDs.Count == 2 && !overlapping.ObjectIDs.Contains(a.InstanceGuid)
+                && d.UndoServer.UndoCount == 0,
+                "the layout change was replayed as external movement on the next drag");
+        });
+        Check("An empty nested group does not prevent an individual member from leaving", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var empty = AddGroup(d);
+            g.AddObject(empty.InstanceGuid);
+            d.Selection.Add(g);
+            c.Down(); a.Move(500); c.Up();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && g.ObjectIDs.Contains(empty.InstanceGuid) && m.LastChangeCount == 1,
+                "ignoring an empty descendant protected a real individual exit");
+        });
+        foreach (var reconcileOnDrop in new[] { false, true })
+        {
+            Check($"External group carrying tolerates layout changes and rounding (drop: {reconcileOnDrop})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                a.Move(500); b.Move(500.4f);
+                var bounds = a.Attributes.Bounds;
+                bounds.Width += 30;
+                a.Attributes.Bounds = bounds;
+                if (reconcileOnDrop)
+                {
+                    d.Selection.Add(o);
+                    c.Down(); o.Move(10); c.Up();
+                }
+                else
+                {
+                    m.RefreshAllObjects();
+                }
+                Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
+                    "external reconciliation detached members with matching pivot movement");
+            });
+            Check($"External group carrying ignores empty descendants and unusable bounds (drop: {reconcileOnDrop})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var invisible = new Obj { Attributes = { Bounds = RectangleF.Empty } };
+                var child = AddGroup(d, invisible);
+                g.AddObject(child.InstanceGuid);
+                m.Configure(null, d, false, 1, false);
+                m.Configure(null, d, true, 1, false);
+                a.Move(500); b.Move(500); invisible.Move(500);
+                if (reconcileOnDrop)
+                {
+                    d.Selection.Add(o);
+                    c.Down(); o.Move(10); c.Up();
+                }
+                else
+                {
+                    m.RefreshAllObjects();
+                }
+                Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                    && g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(invisible.InstanceGuid)
+                    && m.LastChangeCount == 0,
+                    "an untracked descendant invalidated external carrying");
+            });
+        }
+        Check("A carried group with empty descendants preserves its subtree when leaving its parent", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var empty = AddGroup(d);
+            var child = AddGroup(d, a, empty);
+            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
+            d.Selection.Add(child);
+            c.Down(); a.Move(500); c.Up();
+            Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(empty.InstanceGuid)
+                && g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }) && m.LastChangeCount == 1,
+                "leaving the parent detached the child's members or kept the old parent link");
+        });
         Check("A coherent selected majority carries its group", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
