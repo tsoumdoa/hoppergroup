@@ -10,7 +10,7 @@ aectooling by tomoS
 - Removes objects from a group only after the object center leaves that group beyond the configured exit buffer.
 - Keeps a carried group's members together and preserves nested groups while their individual members change.
 - Adds a dragged group to another group when its whole bounding box fits inside the destination.
-- Press `F6` with objects selected, then click one destination group to add them in one step. Press `Esc` to cancel.
+- With objects selected and the canvas focused, tap `G` twice within 650 ms, then click one destination group to add them in one step. Press `Esc` to cancel.
 - Provides manual refresh and optional debug logging.
 - Marks cached group regions dirty when groups are created or deleted.
 
@@ -66,7 +66,7 @@ Close Rhino before rebuilding if the plugin is loaded.
 Create a local Yak package with:
 
 ```bash
-./scripts/release-yak.sh 0.2.4
+./scripts/release-yak.sh 0.2.5
 ```
 
 The script updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`.
@@ -80,13 +80,13 @@ If this is your first Yak publish from this machine, log in first:
 To rehearse publishing on McNeel's daily-wiped test server:
 
 ```bash
-./scripts/release-yak.sh 0.2.4-beta.1 --push-test
+./scripts/release-yak.sh 0.2.5-beta.1 --push-test
 ```
 
 To publish to the public Yak server:
 
 ```bash
-./scripts/release-yak.sh 0.2.4 --push-public
+./scripts/release-yak.sh 0.2.5 --push-public
 ```
 
 Close Rhino before rebuilding if the plugin is loaded. Public Yak package versions cannot be overwritten after publishing; bump the version if a pushed release is wrong. Generated release artifacts live under `artifacts/yak/` and are ignored by git.
@@ -105,7 +105,7 @@ When an external group move is followed by a member drag, the drag uses the grou
 
 Disabling the component, either through `Enabled` or Grasshopper's Disable command, detaches the canvas and document handlers. Movement, placement, Refresh, and undo/redo do not trigger membership work while disabled. Re-enabling captures the current layout without replaying moves made while disabled.
 
-Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history, including when membership is added with F6. Both F6 additions and drag destinations reject nesting a group inside its own descendant.
+Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history, including when membership is added with GG. Both GG additions and drag destinations reject nesting a group inside its own descendant.
 
 When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Clicking a newly grouped selection preserves its manual memberships even over overlapping groups. New ungrouped objects still join the group at their placement point. Refresh after a manual addition establishes the boundary for later individual moves.
 

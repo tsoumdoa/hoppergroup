@@ -17,7 +17,7 @@ namespace HopperGroup
             : base(
                 "Hopper Group",
                 "HopperGroup",
-                "Automatically adds dragged Grasshopper objects to the group region they occupy.",
+                "Automatically adds dragged Grasshopper objects to the group region they occupy. Select objects and tap G twice, then click a destination group to add them manually. Esc cancels.",
                 "Params",
                 "Util")
         {
@@ -66,6 +66,7 @@ namespace HopperGroup
             }
 
             _manager.Configure(this, doc, _enabled, (float)_exitScale, _debug);
+            Message = _manager.ShortcutPrompt;
 
             if (refresh && !_lastRefresh)
             {
@@ -94,6 +95,7 @@ namespace HopperGroup
 
         internal void ScheduleOutputRefresh()
         {
+            Message = _manager.ShortcutPrompt;
             try
             {
                 ExpireSolution(true);

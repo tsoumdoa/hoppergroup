@@ -38,7 +38,7 @@ class Program
         document.Add(group);
         return group;
     }
-    static (GH_Document, GH_Canvas, GroupMembershipManager, GH_Group, Obj, Obj, Obj) Setup(bool scribbleMember = false)
+    static (GH_Document, GH_Canvas, GroupMembershipManager, GH_Group, Obj, Obj, Obj) Setup(bool scribbleMember = false, Func<long> shortcutTimestamp = null)
     {
         var d = new GH_Document();
         Obj a = new Obj(0), b = scribbleMember ? new GH_Scribble(60) : new Obj(60), other = new Obj(1000);
@@ -49,7 +49,7 @@ class Program
         g.AddObject(b.InstanceGuid);
         var c = new GH_Canvas { Document = d };
         Grasshopper.Instances.ActiveCanvas = c;
-        var m = new GroupMembershipManager();
+        var m = new GroupMembershipManager(shortcutTimestamp);
         m.Configure(null, d, true, 1, false);
         return (d, c, m, g, a, b, other);
     }
@@ -1236,7 +1236,76 @@ class Program
             Assert(child.ObjectIDs.Contains(a.InstanceGuid) && !g.ObjectIDs.Contains(child.InstanceGuid),
                 "child drag damaged its own membership or kept the parent link");
         });
-        Check("F6 does not add a group into its own descendant", () =>
+        Check("GG requires two distinct taps within the time window", () =>
+        {
+            long now = 0;
+            var (d, c, m, g, a, b, o) = Setup(shortcutTimestamp: () => now);
+            d.Selection.Add(o);
+            c.Press(System.Windows.Forms.Keys.G);
+            now += System.Diagnostics.Stopwatch.Frequency / 10;
+            c.Press(System.Windows.Forms.Keys.G);
+            Assert(m.ShortcutPrompt == string.Empty, "holding G armed the command");
+            c.Release(System.Windows.Forms.Keys.G);
+            now += System.Diagnostics.Stopwatch.Frequency;
+            c.TapG();
+            Assert(m.ShortcutPrompt == string.Empty, "slow taps armed the command");
+            now += System.Diagnostics.Stopwatch.Frequency / 10;
+            c.TapG();
+            Assert(m.ShortcutPrompt.Contains("Click group"), "quick taps did not arm the command");
+            d.Selection.Clear(); d.Selection.Add(g); c.Down(); c.ClickUp();
+            Assert(g.ObjectIDs.Contains(o.InstanceGuid) && m.ShortcutPrompt == string.Empty
+                && m.LastChangeCount == 1 && d.UndoServer.UndoCount == 1,
+                "GG addition or prompt cleanup failed");
+        });
+        Check("GG leaves modified keys, F6 and editor typing alone", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(o);
+            foreach (var modifier in new[] { System.Windows.Forms.Keys.Control, System.Windows.Forms.Keys.Shift, System.Windows.Forms.Keys.Alt })
+            {
+                var first = c.Press(System.Windows.Forms.Keys.G, modifier);
+                c.Release(System.Windows.Forms.Keys.G);
+                var second = c.Press(System.Windows.Forms.Keys.G, modifier);
+                c.Release(System.Windows.Forms.Keys.G);
+                Assert(!first.Handled && !first.SuppressKeyPress && !second.Handled
+                    && m.ShortcutPrompt == string.Empty, "modified G was intercepted");
+            }
+            Assert(!c.Press(System.Windows.Forms.Keys.F6).Handled, "F6 is still intercepted");
+            c.Blur();
+            Assert(!c.Press(System.Windows.Forms.Keys.G).Handled, "typing without canvas focus was intercepted");
+            c.Release(System.Windows.Forms.Keys.G); c.GG();
+            Assert(m.ShortcutPrompt == string.Empty, "editor typing armed the command");
+        });
+        Check("GG resets between focus, mouse, other-key and disable interruptions", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(o);
+            c.TapG(); c.Press(System.Windows.Forms.Keys.H); c.TapG();
+            Assert(m.ShortcutPrompt == string.Empty, "G H G armed the command");
+            c.Blur(); c.Focused = true; c.TapG();
+            Assert(m.ShortcutPrompt == string.Empty, "focus change retained the first tap");
+            c.Down(); c.ClickUp(); c.TapG();
+            Assert(m.ShortcutPrompt == string.Empty, "mouse click retained the first tap");
+            m.Configure(null, d, false, 1, false);
+            m.Configure(null, d, true, 1, false); c.TapG();
+            Assert(m.ShortcutPrompt == string.Empty, "disable retained the first tap");
+            c.TapG();
+            Assert(m.ShortcutPrompt != string.Empty, "GG failed after re-enabling");
+            c.Escape();
+            Assert(m.ShortcutPrompt == string.Empty && m.Status == "Add to group cancelled",
+                "Escape left an active prompt");
+        });
+        Check("GG ignores empty selection and clears the prompt after a missed destination", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            Assert(!c.Press(System.Windows.Forms.Keys.G).Handled, "G with no selection was intercepted");
+            c.Release(System.Windows.Forms.Keys.G);
+            d.Selection.Add(o); c.GG();
+            d.Selection.Clear(); c.Down(); c.ClickUp();
+            Assert(m.ShortcutPrompt == string.Empty && m.Status.Contains("cancelled")
+                && d.UndoServer.UndoCount == 0, "missed destination left stale feedback or changed membership");
+        });
+        Check("GG does not add a group into its own descendant", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var child = new GH_Group(d);
@@ -1244,25 +1313,25 @@ class Program
             d.Add(child);
             g.AddObject(child.InstanceGuid);
             d.Selection.Add(g);
-            c.F6();
+            c.GG();
             d.Selection.Clear(); d.Selection.Add(child);
             c.Down(); c.ClickUp();
             Assert(!child.ObjectIDs.Contains(g.InstanceGuid) && m.LastChangeCount == 0,
-                "F6 created a cyclic group hierarchy");
+                "GG created a cyclic group hierarchy");
         });
-        Check("F6 preserves unrelated pending external moves", () =>
+        Check("GG preserves unrelated pending external moves", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var x = new Obj(2000); var y = new Obj(2060);
             d.Add(x); d.Add(y);
             var target = new GH_Group(d); target.AddObject(x.InstanceGuid); target.AddObject(y.InstanceGuid); d.Add(target);
             a.Move(500);
-            d.Selection.Add(o); c.F6();
+            d.Selection.Add(o); c.GG();
             d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
             Assert(target.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 1,
-                "F6 did not add the captured object");
+                "GG did not add the captured object");
             m.RefreshAllObjects();
-            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "F6 erased unrelated pending external move; escaped member retained");
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "GG erased unrelated pending external move; escaped member retained");
         });
         Check("Child joins inner destination while staying inside outer parent", () =>
         {
@@ -1279,18 +1348,18 @@ class Program
                 "fully enclosed child failed to transfer to inner destination");
             Assert(d.UndoServer.UndoCount == 1, "nested transfer was split across undo records");
         });
-        Check("F6 preserves pending moves through an unrelated native drag", () =>
+        Check("GG preserves pending moves through an unrelated native drag", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var target = AddGroup(d, new Obj(2000), new Obj(2060));
             a.Move(500);
-            d.Selection.Add(o); c.F6();
+            d.Selection.Add(o); c.GG();
             d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
             d.Selection.Clear(); d.Selection.Add(o); c.Down(); o.Move(5); c.Up();
             Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && target.ObjectIDs.Contains(o.InstanceGuid),
-                "F6 lost pending movement or the subsequent drag undid the addition");
+                "GG lost pending movement or the subsequent drag undid the addition");
         });
-        Check("F6 into a nested child preserves pending member exits", () =>
+        Check("GG into a nested child preserves pending member exits", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var sibling = new Obj(30);
@@ -1299,45 +1368,45 @@ class Program
             m.RefreshAllObjects();
             var added = new Obj(20); d.Add(added);
             a.Move(500);
-            d.Selection.Add(added); c.F6();
+            d.Selection.Add(added); c.GG();
             d.Selection.Clear(); d.Selection.Add(child); c.Down(); c.ClickUp();
             m.RefreshAllObjects();
             Assert(!child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
                 && child.ObjectIDs.Contains(sibling.InstanceGuid) && g.ObjectIDs.Contains(child.InstanceGuid),
-                "nested F6 edit erased an exit or damaged parent-child membership");
+                "nested GG edit erased an exit or damaged parent-child membership");
         });
-        Check("F6 adds a subtree and later dragging it out preserves internal links", () =>
+        Check("GG adds a subtree and later dragging it out preserves internal links", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var leaf = AddGroup(d, o);
             var root = AddGroup(d, leaf);
-            d.Selection.Add(root); c.F6();
+            d.Selection.Add(root); c.GG();
             d.Selection.Clear(); d.Selection.Add(g); c.Down(); c.ClickUp();
             Assert(g.ObjectIDs.Contains(root.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
-                && leaf.ObjectIDs.Contains(o.InstanceGuid), "F6 flattened the subtree");
+                && leaf.ObjectIDs.Contains(o.InstanceGuid), "GG flattened the subtree");
             m.RefreshAllObjects();
             d.Selection.Clear(); d.Selection.Add(root); c.Down(); o.Move(500); c.Up();
             Assert(!g.ObjectIDs.Contains(root.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
                 && leaf.ObjectIDs.Contains(o.InstanceGuid), "subtree exit damaged internal links");
         });
-        Check("F6 rejects a deep cycle while still adding valid selected objects", () =>
+        Check("GG rejects a deep cycle while still adding valid selected objects", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var leaf = AddGroup(d, o);
             var middle = AddGroup(d, leaf);
             g.AddObject(middle.InstanceGuid);
             var added = new Obj(1030); d.Add(added);
-            d.Selection.Add(g); d.Selection.Add(added); c.F6();
+            d.Selection.Add(g); d.Selection.Add(added); c.GG();
             d.Selection.Clear(); d.Selection.Add(leaf); c.Down(); c.ClickUp();
             Assert(!leaf.ObjectIDs.Contains(g.InstanceGuid) && leaf.ObjectIDs.Contains(added.InstanceGuid)
                 && middle.ObjectIDs.Contains(leaf.InstanceGuid) && g.ObjectIDs.Contains(middle.InstanceGuid)
                 && m.LastChangeCount == 1, "deep cycle was accepted or valid addition was lost");
         });
-        Check("Escape cancels F6 without changing nested memberships or undo history", () =>
+        Check("Escape cancels GG without changing nested memberships or undo history", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var child = AddGroup(d, o);
-            d.Selection.Add(child); c.F6(); c.Escape();
+            d.Selection.Add(child); c.GG(); c.Escape();
             d.Selection.Clear(); d.Selection.Add(g); c.Down(); c.ClickUp();
             Assert(!g.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(o.InstanceGuid)
                 && d.UndoServer.UndoCount == 0, "cancelled shortcut changed the document");

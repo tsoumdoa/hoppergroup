@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Text;
@@ -15,6 +16,10 @@ namespace HopperGroup
     {
         // Grasshopper layouts can round pivots to whole canvas units independently.
         private const float TranslationTolerance = 1f;
+        private const int GroupTapWindowMilliseconds = 650;
+        private readonly Func<long> _shortcutTimestamp;
+        private long? _firstGroupTapTimestamp;
+        private bool _groupKeyDown;
         private readonly List<GroupRegion> _groups = new List<GroupRegion>();
         private readonly Dictionary<Guid, Guid> _parentByChild = new Dictionary<Guid, Guid>();
         private readonly Dictionary<Guid, PointF> _positionsAtMouseDown = new Dictionary<Guid, PointF>();
@@ -44,6 +49,14 @@ namespace HopperGroup
         public int GroupCount => _groups.Count;
         public int LastChangeCount { get; private set; }
         public string DebugLog => _debugLog.ToString();
+        public string ShortcutPrompt => _shortcutObjectIds.Count > 0
+            ? $"Add {_shortcutObjectIds.Count} object(s)\nClick group; Esc cancels"
+            : string.Empty;
+
+        internal GroupMembershipManager(Func<long> shortcutTimestamp = null)
+        {
+            _shortcutTimestamp = shortcutTimestamp ?? Stopwatch.GetTimestamp;
+        }
 
         public void Configure(HopperGroupComponent owner, GH_Document document, bool enabled, float exitScale, bool debug)
         {
@@ -185,6 +198,7 @@ namespace HopperGroup
             // authoritative instead of interpreting the restored positions as external moves.
             ClearDragState();
             _shortcutObjectIds.Clear();
+            ResetGroupTaps();
             RebuildGroupCache();
             RememberSettledLayout();
             LastChangeCount = 0;
@@ -204,6 +218,8 @@ namespace HopperGroup
             _canvas.MouseDown += OnCanvasMouseDown;
             _canvas.MouseUp += OnCanvasMouseUp;
             _canvas.KeyDown += OnCanvasKeyDown;
+            _canvas.KeyUp += OnCanvasKeyUp;
+            _canvas.LostFocus += OnCanvasLostFocus;
             Log("Subscribed to active Grasshopper canvas mouse events.");
         }
 
@@ -217,8 +233,11 @@ namespace HopperGroup
             _canvas.MouseDown -= OnCanvasMouseDown;
             _canvas.MouseUp -= OnCanvasMouseUp;
             _canvas.KeyDown -= OnCanvasKeyDown;
+            _canvas.KeyUp -= OnCanvasKeyUp;
+            _canvas.LostFocus -= OnCanvasLostFocus;
             _canvas = null;
             _shortcutObjectIds.Clear();
+            ResetGroupTaps();
             ClearDragState();
         }
 
@@ -282,6 +301,7 @@ namespace HopperGroup
 
         private void OnCanvasMouseDown(object sender, MouseEventArgs e)
         {
+            ResetGroupTaps();
             if (!_enabled || _handlingDrop || e.Button != MouseButtons.Left || !IsCurrentCanvasDocument())
             {
                 return;
@@ -330,6 +350,8 @@ namespace HopperGroup
                     return;
                 }
                 _shortcutObjectIds.Clear();
+                Status = "Add to group cancelled: no destination group selected";
+                _owner?.ScheduleOutputRefresh();
             }
 
             var selection = _document.SelectedObjects();
@@ -384,23 +406,52 @@ namespace HopperGroup
 
         private void OnCanvasKeyDown(object sender, KeyEventArgs e)
         {
-            if (!_enabled || !IsCurrentCanvasDocument())
+            if (!_enabled || !IsCurrentCanvasDocument() || !_canvas.Focused
+                || e.Handled || e.Modifiers != Keys.None)
             {
+                ResetGroupTaps();
                 return;
             }
 
             if (e.KeyCode == Keys.Escape && _shortcutObjectIds.Count > 0)
             {
+                ResetGroupTaps();
                 _shortcutObjectIds.Clear();
-                Status = "F6 add cancelled";
+                Status = "Add to group cancelled";
                 _owner?.ScheduleOutputRefresh();
                 e.Handled = true;
                 e.SuppressKeyPress = true;
                 return;
             }
-            if (e.KeyCode != Keys.F6) return;
+            if (e.KeyCode != Keys.G)
+            {
+                ResetGroupTaps();
+                return;
+            }
 
             var selected = _document.SelectedObjects();
+            if (_shortcutObjectIds.Count == 0 && !selected.Any(obj => obj != null && obj != _owner))
+            {
+                ResetGroupTaps();
+                return;
+            }
+
+            // Consume both G presses on the canvas, but require two distinct taps:
+            // keyboard auto-repeat must never activate the command.
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            if (_groupKeyDown) return;
+            _groupKeyDown = true;
+            var timestamp = _shortcutTimestamp();
+            if (!_firstGroupTapTimestamp.HasValue
+                || (timestamp - _firstGroupTapTimestamp.Value) * 1000.0 / Stopwatch.Frequency
+                    > GroupTapWindowMilliseconds)
+            {
+                _firstGroupTapTimestamp = timestamp;
+                return;
+            }
+            _firstGroupTapTimestamp = null;
+
             var groups = selected.OfType<GH_Group>().ToList();
             if (groups.Count == 1 && _shortcutObjectIds.Count > 0)
             {
@@ -414,12 +465,28 @@ namespace HopperGroup
                     _shortcutObjectIds.Add(obj.InstanceGuid);
                 }
                 Status = _shortcutObjectIds.Count == 0
-                    ? "Select objects before pressing F6"
-                    : $"F6: select one destination group for {_shortcutObjectIds.Count} object(s)";
+                    ? "Select objects before tapping G twice"
+                    : $"GG: click one destination group for {_shortcutObjectIds.Count} object(s); Esc cancels";
                 _owner?.ScheduleOutputRefresh();
             }
             e.Handled = true;
             e.SuppressKeyPress = true;
+        }
+
+        private void OnCanvasKeyUp(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.G) _groupKeyDown = false;
+        }
+
+        private void OnCanvasLostFocus(object sender, EventArgs e)
+        {
+            ResetGroupTaps();
+        }
+
+        private void ResetGroupTaps()
+        {
+            _firstGroupTapTimestamp = null;
+            _groupKeyDown = false;
         }
 
         private void AddShortcutSelection(GH_Group target)

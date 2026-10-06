@@ -12,10 +12,12 @@ using HopperGroup;
 namespace System.Windows.Forms
 {
     public enum MouseButtons { Left, Right }
-    public enum Keys { F6, Escape }
+    [Flags]
+    public enum Keys { None = 0, Escape = 27, G = 71, H = 72, F6 = 117, Shift = 65536, Control = 131072, Alt = 262144 }
     public class KeyEventArgs : EventArgs
     {
         public Keys KeyCode { get; set; }
+        public Keys Modifiers { get; set; }
         public bool Handled { get; set; }
         public bool SuppressKeyPress { get; set; }
     }
@@ -46,14 +48,27 @@ namespace Grasshopper.GUI.Canvas
     public class GH_Canvas
     {
         public GH_Document Document;
+        public bool Focused { get; set; } = true;
+        public event EventHandler LostFocus;
         public event EventHandler<System.Windows.Forms.MouseEventArgs> MouseDown, MouseUp;
         public event EventHandler<System.Windows.Forms.KeyEventArgs> KeyDown;
+        public event EventHandler<System.Windows.Forms.KeyEventArgs> KeyUp;
         public int HandlerCount => (MouseDown?.GetInvocationList().Length ?? 0) + (MouseUp?.GetInvocationList().Length ?? 0)
-            + (KeyDown?.GetInvocationList().Length ?? 0);
+            + (KeyDown?.GetInvocationList().Length ?? 0)
+            + (KeyUp?.GetInvocationList().Length ?? 0) + (LostFocus?.GetInvocationList().Length ?? 0);
         public void Down() => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
         public void Up() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(100, 0) });
         public void ClickUp() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
-        public void F6() => KeyDown?.Invoke(this, new System.Windows.Forms.KeyEventArgs { KeyCode = System.Windows.Forms.Keys.F6 });
+        public System.Windows.Forms.KeyEventArgs Press(System.Windows.Forms.Keys key, System.Windows.Forms.Keys modifiers = System.Windows.Forms.Keys.None)
+        {
+            var args = new System.Windows.Forms.KeyEventArgs { KeyCode = key, Modifiers = modifiers };
+            KeyDown?.Invoke(this, args);
+            return args;
+        }
+        public void Release(System.Windows.Forms.Keys key) => KeyUp?.Invoke(this, new System.Windows.Forms.KeyEventArgs { KeyCode = key });
+        public void TapG() { Press(System.Windows.Forms.Keys.G); Release(System.Windows.Forms.Keys.G); }
+        public void GG() { TapG(); TapG(); }
+        public void Blur() { Focused = false; LostFocus?.Invoke(this, EventArgs.Empty); }
         public void Escape() => KeyDown?.Invoke(this, new System.Windows.Forms.KeyEventArgs { KeyCode = System.Windows.Forms.Keys.Escape });
     }
 }
