@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
-using System.Text;
 using System.Windows.Forms;
 using Grasshopper;
 using Grasshopper.GUI.Canvas;
@@ -17,6 +16,7 @@ namespace HopperGroup
         // Grasshopper layouts can round pivots to whole canvas units independently.
         private const float TranslationTolerance = 1f;
         private const int GroupTapWindowMilliseconds = 650;
+        internal const int DebugLogLineLimit = 200;
         private readonly Func<long> _shortcutTimestamp;
         private long? _firstGroupTapTimestamp;
         private bool _groupKeyDown;
@@ -30,14 +30,13 @@ namespace HopperGroup
         private readonly HashSet<Guid> _newObjectIdsSinceSettled = new HashSet<Guid>();
         private readonly HashSet<Guid> _addedObjectIds = new HashSet<Guid>();
         private readonly HashSet<Guid> _shortcutObjectIds = new HashSet<Guid>();
-        private readonly StringBuilder _debugLog = new StringBuilder();
+        private readonly Queue<string> _debugLog = new Queue<string>();
         private HopperGroupComponent _owner;
         private GH_Document _document;
         private GH_Canvas _canvas;
         private bool _enabled;
         private bool _requestedEnabled;
         private bool _debug;
-        private bool _cacheDirty = true;
         private bool _handlingDrop;
         private bool _hasMouseDownSnapshot;
         private bool _hasSettledLayout;
@@ -48,10 +47,14 @@ namespace HopperGroup
         public string Status { get; private set; } = "Ready";
         public int GroupCount => _groups.Count;
         public int LastChangeCount { get; private set; }
-        public string DebugLog => _debugLog.ToString();
+        public string DebugLog => _debugLog.Count == 0
+            ? string.Empty
+            : string.Join(Environment.NewLine, _debugLog) + Environment.NewLine;
         public string ShortcutPrompt => _shortcutObjectIds.Count > 0
             ? $"Add {_shortcutObjectIds.Count} object(s)\nClick group; Esc cancels"
             : string.Empty;
+        private string PendingShortcutStatus =>
+            $"GG: click one destination group for {_shortcutObjectIds.Count} object(s); Esc cancels";
 
         internal GroupMembershipManager(Func<long> shortcutTimestamp = null)
         {
@@ -83,10 +86,9 @@ namespace HopperGroup
             {
                 UnsubscribeDocument();
                 ClearDragState();
-                _shortcutObjectIds.Clear();
+                CancelShortcut();
                 ClearSettledLayout();
                 _document = document;
-                _cacheDirty = true;
             }
 
             if (_enabled)
@@ -94,10 +96,12 @@ namespace HopperGroup
                 if (!wasEnabled || documentChanged)
                 {
                     SubscribeDocument();
-                    _cacheDirty = true;
                 }
                 WireCanvas();
-                RebuildCacheIfNeeded();
+                if (!wasEnabled || documentChanged)
+                {
+                    RebuildGroupCache();
+                }
                 if (!_hasSettledLayout)
                 {
                     RememberSettledLayout();
@@ -115,10 +119,10 @@ namespace HopperGroup
                 ClearSettledLayout();
                 _groups.Clear();
                 _parentByChild.Clear();
-                _cacheDirty = true;
                 LastChangeCount = 0;
                 Status = "Disabled";
             }
+            _owner?.UpdateShortcutPrompt();
         }
 
         public void RefreshAllObjects()
@@ -159,6 +163,7 @@ namespace HopperGroup
             if (e.Type == GH_ObjectEventType.Enabled)
             {
                 Configure(_owner, _document, _requestedEnabled, _exitScale, _debug);
+                if (_enabled) _owner?.ScheduleOutputRefresh();
             }
         }
 
@@ -197,12 +202,12 @@ namespace HopperGroup
             // The host has restored both positions and membership. Treat that layout as
             // authoritative instead of interpreting the restored positions as external moves.
             ClearDragState();
-            _shortcutObjectIds.Clear();
-            ResetGroupTaps();
+            CancelShortcut();
             RebuildGroupCache();
             RememberSettledLayout();
             LastChangeCount = 0;
             Status = $"Enabled - cached {_groups.Count} group region(s)";
+            _owner?.ScheduleOutputRefresh();
         }
 
         private void WireCanvas()
@@ -225,6 +230,7 @@ namespace HopperGroup
 
         private void UnwireCanvas()
         {
+            CancelShortcut();
             if (_canvas == null)
             {
                 return;
@@ -236,8 +242,6 @@ namespace HopperGroup
             _canvas.KeyUp -= OnCanvasKeyUp;
             _canvas.LostFocus -= OnCanvasLostFocus;
             _canvas = null;
-            _shortcutObjectIds.Clear();
-            ResetGroupTaps();
             ClearDragState();
         }
 
@@ -268,32 +272,47 @@ namespace HopperGroup
                 return;
             }
 
+            var selectionChanged = false;
             foreach (var obj in e.Objects)
             {
                 _addedObjectIds.Remove(obj.InstanceGuid);
                 _positionsAtMouseDown.Remove(obj.InstanceGuid);
                 _settledObjectPositions.Remove(obj.InstanceGuid);
                 _newObjectIdsSinceSettled.Remove(obj.InstanceGuid);
-                _shortcutObjectIds.Remove(obj.InstanceGuid);
+                selectionChanged |= _shortcutObjectIds.Remove(obj.InstanceGuid);
                 _settledGroupBounds.Remove(obj.InstanceGuid);
                 _settledGroupMembers.Remove(obj.InstanceGuid);
             }
 
             OnObjectsChanged(e);
+            if (selectionChanged)
+            {
+                if (_shortcutObjectIds.Count == 0)
+                {
+                    CancelShortcut("Add to group cancelled: selected objects deleted");
+                }
+                else
+                {
+                    ResetGroupTaps();
+                    Status = PendingShortcutStatus;
+                }
+                _owner?.ScheduleOutputRefresh();
+            }
         }
 
         private void OnObjectsChanged(GH_DocObjectEventArgs e)
         {
             if (e.Objects.Any(obj => obj is GH_Group))
             {
-                _cacheDirty = true;
-                Log("Group object added or deleted; cache marked dirty.");
+                Log("Group object added or deleted; rebuilding cache.");
 
                 if (_enabled)
                 {
                     RebuildGroupCache();
                     SyncSettledGroups();
-                    Status = $"Enabled - cached {_groups.Count} group region(s)";
+                    Status = _shortcutObjectIds.Count > 0
+                        ? PendingShortcutStatus
+                        : $"Enabled - cached {_groups.Count} group region(s)";
                     _owner?.ScheduleOutputRefresh();
                 }
             }
@@ -349,8 +368,7 @@ namespace HopperGroup
                     ClearDragState();
                     return;
                 }
-                _shortcutObjectIds.Clear();
-                Status = "Add to group cancelled: no destination group selected";
+                CancelShortcut("Add to group cancelled: no destination group selected");
                 _owner?.ScheduleOutputRefresh();
             }
 
@@ -415,9 +433,7 @@ namespace HopperGroup
 
             if (e.KeyCode == Keys.Escape && _shortcutObjectIds.Count > 0)
             {
-                ResetGroupTaps();
-                _shortcutObjectIds.Clear();
-                Status = "Add to group cancelled";
+                CancelShortcut("Add to group cancelled");
                 _owner?.ScheduleOutputRefresh();
                 e.Handled = true;
                 e.SuppressKeyPress = true;
@@ -466,11 +482,9 @@ namespace HopperGroup
                 }
                 Status = _shortcutObjectIds.Count == 0
                     ? "Select objects before tapping G twice"
-                    : $"GG: click one destination group for {_shortcutObjectIds.Count} object(s); Esc cancels";
+                    : PendingShortcutStatus;
                 _owner?.ScheduleOutputRefresh();
             }
-            e.Handled = true;
-            e.SuppressKeyPress = true;
         }
 
         private void OnCanvasKeyUp(object sender, KeyEventArgs e)
@@ -487,6 +501,14 @@ namespace HopperGroup
         {
             _firstGroupTapTimestamp = null;
             _groupKeyDown = false;
+        }
+
+        private void CancelShortcut(string status = null)
+        {
+            _shortcutObjectIds.Clear();
+            ResetGroupTaps();
+            if (status != null) Status = status;
+            _owner?.UpdateShortcutPrompt();
         }
 
         private void AddShortcutSelection(GH_Group target)
@@ -894,10 +916,6 @@ namespace HopperGroup
                 {
                     RebuildGroupCache();
                 }
-                else
-                {
-                    RebuildCacheIfNeeded();
-                }
 
                 var boundsBeforeCarriedGroupMove = selectionContext.HasCarriedGroups
                     ? _groups.ToDictionary(group => group.Id, group => group.Bounds)
@@ -948,14 +966,6 @@ namespace HopperGroup
             }
         }
 
-        private void RebuildCacheIfNeeded()
-        {
-            if (_cacheDirty)
-            {
-                RebuildGroupCache();
-            }
-        }
-
         private void RebuildGroupCache()
         {
             _groups.Clear();
@@ -963,7 +973,6 @@ namespace HopperGroup
 
             if (_document == null)
             {
-                _cacheDirty = false;
                 return;
             }
 
@@ -977,7 +986,6 @@ namespace HopperGroup
 
             _groups.Sort((left, right) => left.Area.CompareTo(right.Area));
             BuildDesiredGroupHierarchy();
-            _cacheDirty = false;
             Log($"Rebuilt group cache with {_groups.Count} group(s).");
         }
 
@@ -1022,11 +1030,22 @@ namespace HopperGroup
 
             foreach (var child in _groups)
             {
-                var parent = _groups
-                    .Where(candidate => candidate.Id != child.Id
-                        && GetArea(effectiveBounds[candidate.Id]) > GetArea(effectiveBounds[child.Id]))
-                    .OrderBy(candidate => GetArea(effectiveBounds[candidate.Id]))
-                    .FirstOrDefault(candidate => ContainsRectangle(effectiveBounds[candidate.Id], effectiveBounds[child.Id]));
+                var childBounds = effectiveBounds[child.Id];
+                var childArea = GetArea(childBounds);
+                GroupRegion parent = null;
+                var parentArea = 0f;
+                foreach (var candidate in _groups)
+                {
+                    if (candidate.Id == child.Id) continue;
+                    var bounds = effectiveBounds[candidate.Id];
+                    var area = GetArea(bounds);
+                    if (area > childArea && (parent == null || area < parentArea)
+                        && ContainsRectangle(bounds, childBounds))
+                    {
+                        parent = candidate;
+                        parentArea = area;
+                    }
+                }
 
                 if (parent != null)
                 {
@@ -1448,7 +1467,8 @@ namespace HopperGroup
             }
 
             var line = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
-            _debugLog.AppendLine(line);
+            _debugLog.Enqueue(line);
+            if (_debugLog.Count > DebugLogLineLimit) _debugLog.Dequeue();
             Rhino.RhinoApp.WriteLine($"[HopperGroup] {message}");
         }
 

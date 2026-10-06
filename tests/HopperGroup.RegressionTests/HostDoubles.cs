@@ -201,10 +201,8 @@ namespace Grasshopper.Kernel.Special
     public class GH_Group : Obj
     {
         public List<Guid> ObjectIDs = new();
-        public GH_Document Document;
         public GH_Group(GH_Document d)
         {
-            Document = d;
             Attributes.Compute = () =>
             {
                 var members = d.Objects.Where(o => ObjectIDs.Contains(o.InstanceGuid)
@@ -243,7 +241,10 @@ namespace HopperGroup
             }
         }
         public int RefreshCount;
-        public void ScheduleOutputRefresh() { RefreshCount++; }
+        public Func<string> ShortcutPromptProvider;
+        public string Message { get; private set; } = string.Empty;
+        public void UpdateShortcutPrompt() { Message = ShortcutPromptProvider?.Invoke() ?? string.Empty; }
+        public void ScheduleOutputRefresh() { UpdateShortcutPrompt(); RefreshCount++; }
     }
 }
 namespace Rhino { public static class RhinoApp { public static void WriteLine(string s) { } } }

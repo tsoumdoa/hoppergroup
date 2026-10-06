@@ -45,7 +45,7 @@ The component is available under `Params > Util > Hopper Group`.
 - `Status`: current state and last operation count.
 - `Groups`: number of cached group regions.
 - `Changes`: membership changes from the last operation.
-- `Log`: debug log.
+- `Log`: the most recent 200 debug lines. Rhino command history receives every debug message.
 
 ## Build
 
@@ -69,7 +69,7 @@ Create a local Yak package with:
 ./scripts/release-yak.sh 0.2.5
 ```
 
-The script updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`.
+The script first runs the regression checks using the .NET 10 SDK. If they pass, it updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`.
 
 If this is your first Yak publish from this machine, log in first:
 
