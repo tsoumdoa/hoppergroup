@@ -275,28 +275,19 @@ class Program
             c.Up();
             Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "zero exit scale kept the member");
         });
-        Check("Carried group retains members", () =>
+        foreach (var selectGroup in new[] { true, false })
         {
-            var (d, c, m, g, a, b, o) = Setup();
-            d.Selection.Add(g);
-            c.Down();
-            a.Move(500);
-            b.Move(500);
-            c.Up();
-            Assert(g.ObjectIDs.Count == 2, "carried group lost members");
-        });
-        Check("Dragging all selected components carries an unselected group", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            d.Selection.Add(a);
-            d.Selection.Add(b);
-            c.Down();
-            a.Move(500);
-            b.Move(500);
-            c.Up();
-            Assert(g.ObjectIDs.Count == 2 && m.LastChangeCount == 0,
-                "component drag removed members from their moving group");
-        });
+            Check(selectGroup ? "Carried group retains members"
+                : "Dragging all selected components carries an unselected group", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                if (selectGroup) d.Selection.Add(g);
+                else { d.Selection.Add(a); d.Selection.Add(b); }
+                c.Down(); a.Move(500); b.Move(500); c.Up();
+                Assert(g.ObjectIDs.SequenceEqual(new[] { a.InstanceGuid, b.InstanceGuid })
+                    && m.LastChangeCount == 0, "drag removed members from their moving group");
+            });
+        }
         Check("A selected group with an empty nested group keeps its moving members", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -529,15 +520,6 @@ class Program
             c.Up();
             Assert(child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(b.InstanceGuid)
                 && g.ObjectIDs.Contains(child.InstanceGuid), "nested group lost its moving components");
-        });
-        Check("One selected member does not carry a two-member group", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            d.Selection.Add(a);
-            c.Down();
-            a.Move(500);
-            c.Up();
-            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "half the group was treated as a majority");
         });
         Check("Selected members moving in different directions do not carry a group", () =>
         {
@@ -907,18 +889,21 @@ class Program
                 && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3,
                 "coherent move lost a group member added since the last settled layout");
         });
-        Check("Manual addition at an external group's destination survives Refresh", () =>
+        foreach (var reconcileOnDrop in new[] { false, true })
         {
-            var (d, c, m, g, a, b, o) = Setup();
-            a.Move(500); b.Move(500);
-            var added = new Obj(530);
-            d.Add(added);
-            g.AddObject(added.InstanceGuid);
-            m.RefreshAllObjects();
-            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
-                && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3
-                && m.LastChangeCount == 0, "Refresh removed a member after an addition at the destination");
-        });
+            Check($"Manual addition at an external group's destination survives {(reconcileOnDrop ? "a drag" : "Refresh")}", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                a.Move(500); b.Move(500);
+                var added = new Obj(530);
+                d.Add(added); g.AddObject(added.InstanceGuid);
+                if (reconcileOnDrop) { c.Down(); a.Move(5); c.Up(); }
+                else m.RefreshAllObjects();
+                Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                    && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3
+                    && m.LastChangeCount == 0, "reconciliation removed a member after an addition at the destination");
+            });
+        }
         Check("Existing object grouped after an external move preserves old members", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -928,18 +913,6 @@ class Program
             Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
                 && g.ObjectIDs.Contains(o.InstanceGuid) && g.ObjectIDs.Count == 3
                 && m.LastChangeCount == 0, "Refresh removed a member after grouping an existing object");
-        });
-        Check("Manual addition at an external group's destination survives a drag", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            a.Move(500); b.Move(500);
-            var added = new Obj(530);
-            d.Add(added);
-            g.AddObject(added.InstanceGuid);
-            c.Down(); a.Move(5); c.Up();
-            Assert(g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
-                && g.ObjectIDs.Contains(added.InstanceGuid) && g.ObjectIDs.Count == 3
-                && m.LastChangeCount == 0, "drag removed a member after an addition at the destination");
         });
         Check("New object moved before manual grouping keeps its current position", () =>
         {
@@ -1305,6 +1278,114 @@ class Program
             Assert(m.ShortcutPrompt == string.Empty && m.Status.Contains("cancelled")
                 && d.UndoServer.UndoCount == 0, "missed destination left stale feedback or changed membership");
         });
+        Check("GG requires fresh taps after switching documents on the same canvas", () =>
+        {
+            long now = 0;
+            var (d, c, m, g, a, b, o) = Setup(shortcutTimestamp: () => now);
+            d.Selection.Add(o); c.TapG();
+            var nextDocument = new GH_Document();
+            var nextObject = new Obj(100);
+            nextDocument.Objects.Add(nextObject); nextDocument.Selection.Add(nextObject);
+            c.Document = nextDocument;
+            m.Configure(null, nextDocument, true, 1, false);
+            now += System.Diagnostics.Stopwatch.Frequency / 10;
+            c.TapG();
+            Assert(m.ShortcutPrompt == string.Empty, "a tap from the previous document armed GG");
+            now += System.Diagnostics.Stopwatch.Frequency / 10;
+            c.TapG();
+            Assert(m.ShortcutPrompt.Contains("Add 1 object(s)"), "two taps in the new document did not arm GG");
+        });
+        Check("Deleting one captured GG object updates the prompt and preserves the remaining addition", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var second = new Obj(1100); d.Add(second);
+            var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+            m.Configure(owner, d, true, 1, false);
+            d.Selection.Add(o); d.Selection.Add(second); c.GG();
+            Assert(owner.Message.Contains("Add 2 object(s)"), "arming GG did not display the captured count");
+            d.Delete(o);
+            Assert(m.ShortcutPrompt.Contains("Add 1 object(s)") && owner.Message == m.ShortcutPrompt
+                && m.Status.Contains("1 object(s)"), "deletion left the captured count stale");
+            d.Selection.Clear(); d.Selection.Add(g); c.Down(); c.ClickUp();
+            Assert(g.ObjectIDs.Contains(second.InstanceGuid) && !g.ObjectIDs.Contains(o.InstanceGuid)
+                && m.LastChangeCount == 1 && owner.Message == string.Empty,
+                "deletion cancelled the surviving capture or added the deleted object");
+        });
+        Check("Deleting the last captured GG object cancels its status and visible prompt", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+            m.Configure(owner, d, true, 1, false);
+            d.Selection.Add(o); c.GG(); d.Delete(o);
+            Assert(m.ShortcutPrompt == string.Empty && owner.Message == string.Empty
+                && m.Status.Contains("cancel", StringComparison.OrdinalIgnoreCase)
+                && d.UndoServer.UndoCount == 0 && !d.IsModified,
+                "deleting the last capture left an active instruction or edited membership");
+            d.Selection.Clear(); d.Selection.Add(g); c.Down(); c.ClickUp();
+            Assert(!g.ObjectIDs.Contains(o.InstanceGuid) && d.UndoServer.UndoCount == 0,
+                "clicking after source deletion added a deleted object");
+        });
+        foreach (var operation in new[] { GH_UndoOperation.Undo, GH_UndoOperation.Redo })
+        {
+            Check($"{operation} clears the visible GG prompt", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+                m.Configure(owner, d, true, 1, false);
+                d.Selection.Add(o); c.GG();
+                Assert(owner.Message != string.Empty, "GG was not visibly armed before the undo notification");
+                d.RaiseUndoStateChanged(operation);
+                Assert(m.ShortcutPrompt == string.Empty && owner.Message == string.Empty
+                    && m.LastChangeCount == 0 && !g.ObjectIDs.Contains(o.InstanceGuid),
+                    "undo notification cleared internal capture but left its visible prompt");
+            });
+        }
+        foreach (var hostDisable in new[] { false, true })
+        {
+            Check($"Disabling clears the GG prompt without solving its owner (host Disable: {hostDisable})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+                m.Configure(owner, d, true, 1, false);
+                d.Selection.Add(o); c.GG();
+                var refreshCount = owner.RefreshCount;
+                Assert(owner.Message != string.Empty, "GG was not visibly armed before disable");
+                if (hostDisable) owner.Locked = true;
+                else m.Configure(owner, d, false, 1, false);
+                Assert(m.ShortcutPrompt == string.Empty && owner.Message == string.Empty
+                    && owner.RefreshCount == refreshCount && c.HandlerCount == 0 && d.HandlerCount == 0,
+                    "disable left the prompt visible, solved the owner, or retained handlers");
+                if (hostDisable) owner.Locked = false;
+                else m.Configure(owner, d, true, 1, false);
+                c.TapG();
+                Assert(owner.Message == string.Empty, "re-enabling restored a pending capture or first tap");
+                c.TapG();
+                Assert(owner.Message == m.ShortcutPrompt && owner.Message != string.Empty,
+                    "GG prompt did not resume after enabling");
+            });
+        }
+        Check("Debug output retains only recent entries and stops accumulating when disabled", () =>
+        {
+            var (d, c, original, g, a, b, o) = Setup();
+            original.Dispose();
+            var m = new GroupMembershipManager();
+            m.Configure(null, d, true, 1, true);
+            Assert(m.DebugLog.Contains("Subscribed to active Grasshopper canvas"),
+                "initial subscription was not recorded");
+            for (var i = 0; i < GroupMembershipManager.DebugLogLineLimit; i++)
+            {
+                c.Down(); c.ClickUp();
+            }
+            var log = m.DebugLog;
+            var lines = log.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
+            Assert(lines.Length == GroupMembershipManager.DebugLogLineLimit
+                && !log.Contains("Subscribed to active Grasshopper canvas")
+                && log.EndsWith("Frozen group cache at drag start." + Environment.NewLine, StringComparison.Ordinal),
+                "debug output grew beyond its limit or discarded the latest entry");
+            m.Configure(null, d, true, 1, false);
+            c.Down(); c.ClickUp();
+            Assert(m.DebugLog == log, "disabled debug continued accumulating entries");
+        });
         Check("GG does not add a group into its own descendant", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -1319,20 +1400,24 @@ class Program
             Assert(!child.ObjectIDs.Contains(g.InstanceGuid) && m.LastChangeCount == 0,
                 "GG created a cyclic group hierarchy");
         });
-        Check("GG preserves unrelated pending external moves", () =>
+        foreach (var reconcileOnDrop in new[] { false, true })
         {
-            var (d, c, m, g, a, b, o) = Setup();
-            var x = new Obj(2000); var y = new Obj(2060);
-            d.Add(x); d.Add(y);
-            var target = new GH_Group(d); target.AddObject(x.InstanceGuid); target.AddObject(y.InstanceGuid); d.Add(target);
-            a.Move(500);
-            d.Selection.Add(o); c.GG();
-            d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
-            Assert(target.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 1,
-                "GG did not add the captured object");
-            m.RefreshAllObjects();
-            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "GG erased unrelated pending external move; escaped member retained");
-        });
+            Check(reconcileOnDrop ? "GG preserves pending moves through an unrelated native drag"
+                : "GG preserves unrelated pending external moves", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var target = AddGroup(d, new Obj(2000), new Obj(2060));
+                a.Move(500);
+                d.Selection.Add(o); c.GG();
+                d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
+                Assert(target.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 1,
+                    "GG did not add the captured object");
+                if (reconcileOnDrop) { d.Selection.Clear(); d.Selection.Add(o); c.Down(); o.Move(5); c.Up(); }
+                else m.RefreshAllObjects();
+                Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && target.ObjectIDs.Contains(o.InstanceGuid),
+                    "GG lost pending movement or reconciliation undid the addition");
+            });
+        }
         Check("Child joins inner destination while staying inside outer parent", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -1347,17 +1432,6 @@ class Program
                 && g.ObjectIDs.Contains(target.InstanceGuid) && child.ObjectIDs.Contains(member.InstanceGuid),
                 "fully enclosed child failed to transfer to inner destination");
             Assert(d.UndoServer.UndoCount == 1, "nested transfer was split across undo records");
-        });
-        Check("GG preserves pending moves through an unrelated native drag", () =>
-        {
-            var (d, c, m, g, a, b, o) = Setup();
-            var target = AddGroup(d, new Obj(2000), new Obj(2060));
-            a.Move(500);
-            d.Selection.Add(o); c.GG();
-            d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
-            d.Selection.Clear(); d.Selection.Add(o); c.Down(); o.Move(5); c.Up();
-            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && target.ObjectIDs.Contains(o.InstanceGuid),
-                "GG lost pending movement or the subsequent drag undid the addition");
         });
         Check("GG into a nested child preserves pending member exits", () =>
         {

@@ -66,7 +66,6 @@ namespace HopperGroup
             }
 
             _manager.Configure(this, doc, _enabled, (float)_exitScale, _debug);
-            Message = _manager.ShortcutPrompt;
 
             if (refresh && !_lastRefresh)
             {
@@ -93,12 +92,28 @@ namespace HopperGroup
             base.RemovedFromDocument(document);
         }
 
+        internal void UpdateShortcutPrompt()
+        {
+            var prompt = _manager.ShortcutPrompt;
+            if (Message == prompt) return;
+            Message = prompt;
+            Grasshopper.Instances.InvalidateCanvas();
+        }
+
         internal void ScheduleOutputRefresh()
         {
-            Message = _manager.ShortcutPrompt;
+            UpdateShortcutPrompt();
+            var document = OnPingDocument();
+            if (document == null || Locked) return;
             try
             {
-                ExpireSolution(true);
+                document.ScheduleSolution(1, scheduledDocument =>
+                {
+                    if (!Locked && ReferenceEquals(scheduledDocument, OnPingDocument()))
+                    {
+                        ExpireSolution(false);
+                    }
+                });
             }
             catch
             {

@@ -82,11 +82,13 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 csproj="HopperGroup.csproj"
+regression_project="tests/HopperGroup.RegressionTests/HopperGroup.RegressionTests.csproj"
 manifest="yak/manifest.yml"
 readme="README.md"
 icon="yak/icon.png"
 
 [[ -f "$csproj" ]] || fail "missing $csproj"
+[[ -f "$regression_project" ]] || fail "missing $regression_project"
 [[ -f "$manifest" ]] || fail "missing $manifest"
 [[ -f "$readme" ]] || fail "missing $readme"
 [[ -f "$icon" ]] || fail "missing $icon"
@@ -95,6 +97,9 @@ csproj_version_count="$(grep -Ec '<Version>[^<]+</Version>' "$csproj" || true)"
 manifest_version_count="$(grep -Ec '^version:[[:space:]]*[^[:space:]]+' "$manifest" || true)"
 [[ "$csproj_version_count" == "1" ]] || fail "expected exactly one <Version> in $csproj, found $csproj_version_count"
 [[ "$manifest_version_count" == "1" ]] || fail "expected exactly one top-level version field in $manifest, found $manifest_version_count"
+
+log "Running Release regression tests."
+dotnet run --project "$regression_project" -c Release
 
 backup_dir="$(mktemp -d)"
 restore_on_error=0
