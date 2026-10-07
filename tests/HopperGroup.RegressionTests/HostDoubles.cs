@@ -9,6 +9,7 @@ using HopperGroup;
 
 // Minimal host doubles. Group rectangles follow member rectangles, as in Grasshopper.
 // These tests exercise the unchanged manager source, not a replacement algorithm.
+#if !REAL_WINFORMS
 namespace System.Windows.Forms
 {
     public enum MouseButtons { Left, Right }
@@ -16,6 +17,8 @@ namespace System.Windows.Forms
     public enum Keys { None = 0, Escape = 27, G = 71, H = 72, F6 = 117, Shift = 65536, Control = 131072, Alt = 262144 }
     public class KeyEventArgs : EventArgs
     {
+        public KeyEventArgs() { }
+        public KeyEventArgs(Keys key) { KeyCode = key; }
         public Keys KeyCode { get; set; }
         public Keys Modifiers { get; set; }
         public bool Handled { get; set; }
@@ -35,6 +38,7 @@ namespace System.Windows.Forms
         }
     }
 }
+#endif
 namespace Grasshopper
 {
     public static class Instances
@@ -45,17 +49,36 @@ namespace Grasshopper
 }
 namespace Grasshopper.GUI.Canvas
 {
+    public class GH_CanvasDocumentChangedEventArgs : EventArgs
+    {
+        public GH_Document OldDocument, NewDocument;
+    }
+#if !REAL_WINFORMS
     public class GH_Canvas
     {
+        public static System.Windows.Forms.Keys NavigationPanLeft, NavigationPanRight,
+            NavigationPanUp, NavigationPanDown, NavigationZoomIn, NavigationZoomOut;
+        public bool ModifiersEnabled { get; set; } = true;
+        public bool IsActiveInteraction, IsActiveWidget, IsActiveObject;
         public GH_Document Document;
         public bool Focused { get; set; } = true;
         public event EventHandler LostFocus;
+        public event EventHandler<GH_CanvasDocumentChangedEventArgs> DocumentChanged;
+        public event EventHandler<System.Windows.Forms.MouseEventArgs> MouseWheel;
         public event EventHandler<System.Windows.Forms.MouseEventArgs> MouseDown, MouseUp;
         public event EventHandler<System.Windows.Forms.KeyEventArgs> KeyDown;
         public event EventHandler<System.Windows.Forms.KeyEventArgs> KeyUp;
         public int HandlerCount => (MouseDown?.GetInvocationList().Length ?? 0) + (MouseUp?.GetInvocationList().Length ?? 0)
             + (KeyDown?.GetInvocationList().Length ?? 0)
-            + (KeyUp?.GetInvocationList().Length ?? 0) + (LostFocus?.GetInvocationList().Length ?? 0);
+            + (KeyUp?.GetInvocationList().Length ?? 0) + (LostFocus?.GetInvocationList().Length ?? 0)
+            + (DocumentChanged?.GetInvocationList().Length ?? 0) + (MouseWheel?.GetInvocationList().Length ?? 0);
+        public void ChangeDocument(GH_Document document)
+        {
+            var previous = Document;
+            Document = document;
+            DocumentChanged?.Invoke(this, new GH_CanvasDocumentChangedEventArgs { OldDocument = previous, NewDocument = document });
+        }
+        public void Wheel() => MouseWheel?.Invoke(this, new System.Windows.Forms.MouseEventArgs());
         public void Down() => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
         public void Up() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(100, 0) });
         public void ClickUp() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
@@ -71,6 +94,7 @@ namespace Grasshopper.GUI.Canvas
         public void Blur() { Focused = false; LostFocus?.Invoke(this, EventArgs.Empty); }
         public void Escape() => KeyDown?.Invoke(this, new System.Windows.Forms.KeyEventArgs { KeyCode = System.Windows.Forms.Keys.Escape });
     }
+#endif
 }
 namespace Grasshopper.Kernel
 {
@@ -226,6 +250,18 @@ namespace Grasshopper.Kernel.Special
 }
 namespace HopperGroup
 {
+    // Native routing is covered separately with real WinForms HWNDs. This
+    // membership suite keeps exercising the portable managed callback path.
+#if !REAL_WINFORMS
+    internal static class CanvasShortcutHook
+    {
+        internal static bool HasReservedShortcut(Grasshopper.GUI.Canvas.GH_Canvas canvas,
+            System.Windows.Forms.Keys key) => false;
+        internal static IDisposable Attach(Grasshopper.GUI.Canvas.GH_Canvas canvas,
+            Func<System.Windows.Forms.Keys, bool> eligible,
+            Action<System.Windows.Forms.Keys, bool> dispatch, Action reset) => null;
+    }
+#endif
     public class HopperGroupComponent : Obj
     {
         private bool locked;

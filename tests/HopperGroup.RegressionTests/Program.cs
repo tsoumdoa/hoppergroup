@@ -1295,6 +1295,18 @@ class Program
             c.TapG();
             Assert(m.ShortcutPrompt.Contains("Add 1 object(s)"), "two taps in the new document did not arm GG");
         });
+        Check("GG resets when switching away and back without reconfiguring its component", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            d.Selection.Add(o); c.TapG();
+            c.ChangeDocument(new GH_Document()); c.ChangeDocument(d); c.TapG();
+            Assert(m.ShortcutPrompt == string.Empty, "the first tap survived leaving and returning to its document");
+            c.TapG();
+            Assert(m.ShortcutPrompt != string.Empty, "fresh GG failed after returning to its document");
+            c.ChangeDocument(new GH_Document()); c.ChangeDocument(d);
+            Assert(m.ShortcutPrompt == string.Empty && m.Status.Contains("cancelled"),
+                "an armed selection or its pending status survived document changes");
+        });
         Check("Deleting one captured GG object updates the prompt and preserves the remaining addition", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
