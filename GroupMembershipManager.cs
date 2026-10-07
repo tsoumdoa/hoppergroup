@@ -34,6 +34,7 @@ namespace HopperGroup
         private HopperGroupComponent _owner;
         private GH_Document _document;
         private GH_Canvas _canvas;
+        private IDisposable _nativeShortcut;
         private bool _enabled;
         private bool _requestedEnabled;
         private bool _debug;
@@ -225,12 +226,18 @@ namespace HopperGroup
             _canvas.KeyDown += OnCanvasKeyDown;
             _canvas.KeyUp += OnCanvasKeyUp;
             _canvas.LostFocus += OnCanvasLostFocus;
+            _canvas.DocumentChanged += OnCanvasDocumentChanged;
+            _canvas.MouseWheel += OnCanvasMouseWheel;
+            _nativeShortcut = CanvasShortcutHook.Attach(_canvas, CanCaptureShortcut,
+                DispatchNativeShortcut, ResetGroupTaps);
             Log("Subscribed to active Grasshopper canvas mouse events.");
         }
 
         private void UnwireCanvas()
         {
             CancelShortcut();
+            _nativeShortcut?.Dispose();
+            _nativeShortcut = null;
             if (_canvas == null)
             {
                 return;
@@ -241,6 +248,8 @@ namespace HopperGroup
             _canvas.KeyDown -= OnCanvasKeyDown;
             _canvas.KeyUp -= OnCanvasKeyUp;
             _canvas.LostFocus -= OnCanvasLostFocus;
+            _canvas.DocumentChanged -= OnCanvasDocumentChanged;
+            _canvas.MouseWheel -= OnCanvasMouseWheel;
             _canvas = null;
             ClearDragState();
         }
@@ -424,8 +433,35 @@ namespace HopperGroup
 
         private void OnCanvasKeyDown(object sender, KeyEventArgs e)
         {
+            if (_nativeShortcut != null && e.KeyCode != Keys.Escape) return;
+            HandleShortcutKeyDown(e);
+        }
+
+        private bool CanCaptureShortcut(Keys key)
+        {
+            if (!_enabled || !IsCurrentCanvasDocument() || _handlingDrop
+                || (_owner != null && _owner.Locked) || !_canvas.ModifiersEnabled
+                || _canvas.IsActiveInteraction || _canvas.IsActiveWidget || _canvas.IsActiveObject)
+                return false;
+            if (GH_Canvas.NavigationPanLeft == Keys.G || GH_Canvas.NavigationPanRight == Keys.G
+                || GH_Canvas.NavigationPanUp == Keys.G || GH_Canvas.NavigationPanDown == Keys.G
+                || GH_Canvas.NavigationZoomIn == Keys.G || GH_Canvas.NavigationZoomOut == Keys.G
+                || CanvasShortcutHook.HasReservedShortcut(_canvas, Keys.G)) return false;
+            return key == Keys.G && (_shortcutObjectIds.Count > 0
+                || _document.SelectedObjects().Any(obj => obj != null && obj != _owner));
+        }
+
+        private void DispatchNativeShortcut(Keys key, bool down)
+        {
+            var args = new KeyEventArgs(key);
+            if (down) HandleShortcutKeyDown(args);
+            else OnCanvasKeyUp(_canvas, args);
+        }
+
+        private void HandleShortcutKeyDown(KeyEventArgs e)
+        {
             if (!_enabled || !IsCurrentCanvasDocument() || !_canvas.Focused
-                || e.Handled || e.Modifiers != Keys.None)
+                || e.Modifiers != Keys.None)
             {
                 ResetGroupTaps();
                 return;
@@ -437,6 +473,11 @@ namespace HopperGroup
                 _owner?.ScheduleOutputRefresh();
                 e.Handled = true;
                 e.SuppressKeyPress = true;
+                return;
+            }
+            if (e.Handled)
+            {
+                ResetGroupTaps();
                 return;
             }
             if (e.KeyCode != Keys.G)
@@ -495,6 +536,15 @@ namespace HopperGroup
         private void OnCanvasLostFocus(object sender, EventArgs e)
         {
             ResetGroupTaps();
+        }
+
+        private void OnCanvasMouseWheel(object sender, MouseEventArgs e) => ResetGroupTaps();
+
+        private void OnCanvasDocumentChanged(object sender, GH_CanvasDocumentChangedEventArgs e)
+        {
+            CancelShortcut(_shortcutObjectIds.Count > 0
+                ? "Add to group cancelled: active document changed" : null);
+            _owner?.ScheduleOutputRefresh();
         }
 
         private void ResetGroupTaps()
@@ -565,7 +615,8 @@ namespace HopperGroup
 
         private bool IsCurrentCanvasDocument()
         {
-            return _canvas != null && ReferenceEquals(_canvas.Document, _document);
+            return _canvas != null && ReferenceEquals(Instances.ActiveCanvas, _canvas)
+                && ReferenceEquals(_canvas.Document, _document);
         }
 
         private void ClearDragState()

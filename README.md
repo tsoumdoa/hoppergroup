@@ -117,6 +117,16 @@ dotnet run --project tests/HopperGroup.RegressionTests -c Release
 
 These checks compile the production manager against a simulated canvas, group geometry, undo-record server, and completed undo/redo notifications. Undo/redo scenarios restore positions and memberships explicitly before raising the host event. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
 
+On Windows, GG intercepts keys on the focused Grasshopper canvas before the editor can forward them to Rhino. It consumes both taps and their translated characters, requires physical releases between taps, and leaves text fields, modified keys, native canvas interactions, and reserved navigation/menu bindings available to the host. Multiple enabled HopperGroup components share one shortcut owner. Document changes, focus changes, other keys, mouse clicks, and wheel events reset incomplete gestures. Non-Windows builds retain the managed canvas key callbacks.
+
+Run the Windows input checks with the .NET 10 SDK on Windows:
+
+```powershell
+dotnet run --project tests/HopperGroup.WindowsInputTests -c Release
+```
+
+These checks compile the production manager and native hook against real WinForms controls and a simulated GH document. They exercise queued keyboard messages, `TranslateMessage`, editor `KeyPreview` forwarding, text typing, focus, physical repeat, handle recreation, multiple component ownership, and coexistence with another canvas shortcut hook in both installation orders. A live Rhino/Grasshopper smoke test is still needed for the host's native interactions and plugin integration.
+
 ## License
 
 HopperGroup is released under the [MIT License](LICENSE).
