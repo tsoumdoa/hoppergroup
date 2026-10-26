@@ -8,6 +8,8 @@ using Grasshopper;
 using Grasshopper.GUI.Canvas;
 using Grasshopper.Kernel;
 using Grasshopper.Kernel.Special;
+using Grasshopper.Kernel.Undo;
+using Grasshopper.Kernel.Undo.Actions;
 
 namespace HopperGroup
 {
@@ -35,6 +37,7 @@ namespace HopperGroup
         private GH_Document _document;
         private GH_Canvas _canvas;
         private IDisposable _nativeShortcut;
+        private GH_UndoRecord _pendingRemovalUndo;
         private bool _enabled;
         private bool _requestedEnabled;
         private bool _debug;
@@ -182,6 +185,7 @@ namespace HopperGroup
 
         private void UnsubscribeDocument()
         {
+            _pendingRemovalUndo = null;
             if (_document == null)
             {
                 return;
@@ -194,12 +198,23 @@ namespace HopperGroup
 
         private void OnUndoStateChanged(object sender, GH_DocUndoEventArgs e)
         {
-            if (!_enabled || _handlingDrop
-                || (e.Operation != GH_UndoOperation.Undo && e.Operation != GH_UndoOperation.Redo))
+            if (!_enabled || _handlingDrop)
             {
                 return;
             }
 
+            if (e.Operation == GH_UndoOperation.RecordAdded)
+            {
+                _pendingRemovalUndo = e.Record != null && e.Record.Actions.Any(action => action is GH_RemoveObjectAction)
+                    ? e.Record : null;
+                return;
+            }
+            if (e.Operation != GH_UndoOperation.Undo && e.Operation != GH_UndoOperation.Redo)
+            {
+                return;
+            }
+
+            _pendingRemovalUndo = null;
             // The host has restored both positions and membership. Treat that layout as
             // authoritative instead of interpreting the restored positions as external moves.
             ClearDragState();
@@ -281,6 +296,9 @@ namespace HopperGroup
                 return;
             }
 
+            var removalUndo = _pendingRemovalUndo;
+            _pendingRemovalUndo = null;
+            var changes = PromoteDeletedGroupContents(e.Objects.OfType<GH_Group>(), removalUndo);
             var selectionChanged = false;
             foreach (var obj in e.Objects)
             {
@@ -294,6 +312,14 @@ namespace HopperGroup
             }
 
             OnObjectsChanged(e);
+            if (changes > 0)
+            {
+                LastChangeCount = changes;
+                _document.IsModified = true;
+                Status = _shortcutObjectIds.Count > 0 ? PendingShortcutStatus
+                    : $"Enabled - cached {_groups.Count} group region(s), {changes} change(s)";
+                Instances.InvalidateCanvas();
+            }
             if (selectionChanged)
             {
                 if (_shortcutObjectIds.Count == 0)
@@ -306,6 +332,71 @@ namespace HopperGroup
                     Status = PendingShortcutStatus;
                 }
                 _owner?.ScheduleOutputRefresh();
+            }
+        }
+
+        private int PromoteDeletedGroupContents(IEnumerable<GH_Group> deletedGroups, GH_UndoRecord removalUndo)
+        {
+            var deletedById = deletedGroups.ToDictionary(group => group.InstanceGuid);
+            if (deletedById.Count == 0)
+            {
+                return 0;
+            }
+
+            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var changes = 0;
+            foreach (var parent in _document.Objects.OfType<GH_Group>())
+            {
+                // Use real membership links, including parents left without visible bounds.
+                // Geometric containment cannot identify the original parent after deletion.
+                var removedChildren = parent.ObjectIDs.Where(deletedById.ContainsKey).ToList();
+                if (removedChildren.Count == 0) continue;
+                var survivors = new HashSet<Guid>();
+                var visited = new HashSet<Guid>();
+                foreach (var childId in removedChildren)
+                {
+                    CollectSurvivingGroupContents(deletedById[childId], deletedById, objectsById, visited, survivors);
+                }
+                survivors.RemoveWhere(id => id == parent.InstanceGuid || parent.ObjectIDs.Contains(id)
+                    || (objectsById[id] is GH_Group child
+                        && GroupContainsDescendant(child, parent.InstanceGuid, objectsById)));
+
+                // Native Ungroup/Delete already has an undo record. Restore parents
+                // after recreating deleted groups on Undo, and before deleting them on
+                // Redo. This also prevents replayed deletion from promoting them again.
+                if (removalUndo != null && _document.UndoServer.UndoGuids.FirstOrDefault() == removalUndo.Guid)
+                {
+                    removalUndo.Actions.Insert(0, new GH_GenericObjectAction(parent));
+                }
+                foreach (var childId in removedChildren) parent.RemoveObject(childId);
+                foreach (var id in survivors)
+                {
+                    parent.AddObject(id);
+                    changes++;
+                    Log($"Promoted {id} to parent group {parent.InstanceGuid} after group deletion.");
+                }
+                ExpireGroup(parent);
+            }
+
+            return changes;
+        }
+
+        private static void CollectSurvivingGroupContents(GH_Group group,
+            Dictionary<Guid, GH_Group> deletedById, Dictionary<Guid, IGH_DocumentObject> objectsById,
+            HashSet<Guid> visited, HashSet<Guid> survivors)
+        {
+            if (!visited.Add(group.InstanceGuid)) return;
+            foreach (var id in group.ObjectIDs)
+            {
+                if (deletedById.TryGetValue(id, out var deletedChild))
+                {
+                    CollectSurvivingGroupContents(deletedChild, deletedById, objectsById, visited, survivors);
+                }
+                else if (objectsById.ContainsKey(id))
+                {
+                    // Keep surviving groups as groups instead of flattening their descendants.
+                    survivors.Add(id);
+                }
             }
         }
 

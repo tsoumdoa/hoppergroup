@@ -55,6 +55,163 @@ class Program
     }
     static void Main()
     {
+        Check("Deleting a nested group promotes its components to its direct parent", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, a, b);
+            g.ObjectIDs.Clear(); g.AddObject(child.InstanceGuid);
+            var outer = AddGroup(d, g, new Obj(-100), new Obj(200));
+            d.Delete(child);
+            Assert(g.ObjectIDs.Count == 2 && g.ObjectIDs.Contains(a.InstanceGuid)
+                && g.ObjectIDs.Contains(b.InstanceGuid) && outer.ObjectIDs.Contains(g.InstanceGuid)
+                && !outer.ObjectIDs.Contains(a.InstanceGuid) && !outer.ObjectIDs.Contains(b.InstanceGuid),
+                "components fell out of their parent or were flattened into the outer group");
+            Assert(m.LastChangeCount == 2 && d.IsModified, "promotion did not update the change output");
+            m.RefreshAllObjects();
+            Assert(g.ObjectIDs.Count == 2 && g.ObjectIDs.Contains(a.InstanceGuid)
+                && g.ObjectIDs.Contains(b.InstanceGuid) && m.LastChangeCount == 0,
+                "Refresh changed the promoted memberships");
+        });
+        Check("Deleting a group keeps surviving nested groups intact", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var leaf = AddGroup(d, o);
+            var child = AddGroup(d, leaf, a);
+            g.RemoveObject(a.InstanceGuid); g.AddObject(child.InstanceGuid);
+            d.Delete(child);
+            Assert(g.ObjectIDs.Contains(leaf.InstanceGuid) && g.ObjectIDs.Contains(a.InstanceGuid)
+                && g.ObjectIDs.Contains(b.InstanceGuid) && !g.ObjectIDs.Contains(o.InstanceGuid)
+                && !g.ObjectIDs.Contains(child.InstanceGuid)
+                && leaf.ObjectIDs.SequenceEqual(new[] { o.InstanceGuid }),
+                "deleting an intermediate group lost or flattened its surviving subtree");
+        });
+        foreach (var reverseOrder in new[] { false, true })
+        {
+            Check($"Batch deletion promotes through deleted ancestors (reverse order: {reverseOrder})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var leaf = AddGroup(d, a, b);
+                var middle = AddGroup(d, leaf, o);
+                g.ObjectIDs.Clear(); g.AddObject(middle.InstanceGuid);
+                var deleted = new IGH_DocumentObject[] { middle, leaf, b };
+                d.Delete(reverseOrder ? deleted.Reverse() : deleted);
+                Assert(g.ObjectIDs.Count == 2 && g.ObjectIDs.Contains(a.InstanceGuid)
+                    && g.ObjectIDs.Contains(o.InstanceGuid) && !d.Objects.Contains(b),
+                    "batch deletion lost survivors or retained deleted objects and group links");
+            });
+        }
+        Check("Group deletion uses explicit parents and avoids duplicate memberships", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, a, b);
+            var otherParent = AddGroup(d, child);
+            var overlap = AddGroup(d, new Obj(-100, -100), new Obj(1100, 100));
+            g.AddObject(child.InstanceGuid);
+            d.Delete(child);
+            Assert(g.ObjectIDs.Count == 2 && otherParent.ObjectIDs.Count == 2
+                && otherParent.ObjectIDs.Contains(a.InstanceGuid) && otherParent.ObjectIDs.Contains(b.InstanceGuid)
+                && !overlap.ObjectIDs.Contains(a.InstanceGuid) && !overlap.ObjectIDs.Contains(b.InstanceGuid),
+                "promotion duplicated existing members or assigned contents to a geometric overlap");
+        });
+        Check("Deleting a root group leaves its contents ungrouped", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var overlap = AddGroup(d, new Obj(-100, -100), new Obj(200, 100));
+            d.Delete(g);
+            Assert(d.Objects.Contains(a) && d.Objects.Contains(b)
+                && !overlap.ObjectIDs.Contains(a.InstanceGuid) && !overlap.ObjectIDs.Contains(b.InstanceGuid)
+                && !d.IsModified && d.UndoServer.UndoCount == 0,
+                "root deletion unexpectedly grouped contents or changed undo history");
+        });
+        Check("Ungroup promotion shares the native Undo and survives repeated Undo and Redo", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, a, b);
+            g.ObjectIDs.Clear(); g.AddObject(child.InstanceGuid);
+            d.UndoServer.UndoNames.Add("Earlier edit");
+            var record = d.DeleteWithUndo("Ungroup", child);
+            Assert(g.ObjectIDs.Count == 2 && g.ObjectIDs.Contains(a.InstanceGuid)
+                && g.ObjectIDs.Contains(b.InstanceGuid) && record.Actions.Count == 2
+                && d.UndoServer.UndoNames.SequenceEqual(new[] { "Ungroup", "Earlier edit" }),
+                "promotion was not part of the native deletion undo record");
+            for (var cycle = 0; cycle < 2; cycle++)
+            {
+                d.UndoServer.UndoRecords.RemoveAt(0);
+                d.UndoServer.UndoNames.RemoveAt(0);
+                record.Undo(d);
+                d.RaiseUndoStateChanged(GH_UndoOperation.Undo);
+                Assert(g.ObjectIDs.SequenceEqual(new[] { child.InstanceGuid })
+                    && child.ObjectIDs.Count == 2 && d.Objects.Contains(child),
+                    "Undo did not restore the original nested memberships");
+                m.RefreshAllObjects();
+                Assert(g.ObjectIDs.SequenceEqual(new[] { child.InstanceGuid }) && m.LastChangeCount == 0,
+                    "Refresh changed the undone memberships");
+                record.Redo(d);
+                d.UndoServer.UndoRecords.Insert(0, record);
+                d.UndoServer.UndoNames.Insert(0, "Ungroup");
+                d.RaiseUndoStateChanged(GH_UndoOperation.Redo);
+                Assert(!d.Objects.Contains(child) && g.ObjectIDs.Count == 2
+                    && g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                    && record.Actions.Count == 2
+                    && d.UndoServer.UndoNames.SequenceEqual(new[] { "Ungroup", "Earlier edit" }),
+                    "Redo lost promoted memberships or created extra undo edits");
+                m.RefreshAllObjects();
+                Assert(m.LastChangeCount == 0, "Refresh changed the redone memberships");
+            }
+        });
+        Check("Batch deletion restores nested ancestors and deleted components in one Undo", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var leaf = AddGroup(d, a, b);
+            var middle = AddGroup(d, leaf, o);
+            g.ObjectIDs.Clear(); g.AddObject(middle.InstanceGuid);
+            var record = d.DeleteWithUndo("Delete", middle, leaf, b);
+            Assert(g.ObjectIDs.Count == 2 && g.ObjectIDs.Contains(a.InstanceGuid)
+                && g.ObjectIDs.Contains(o.InstanceGuid) && record.Actions.Count == 4,
+                "batch deletion did not record one parent snapshot with the removals");
+            for (var cycle = 0; cycle < 2; cycle++)
+            {
+                d.UndoServer.UndoRecords.Clear(); d.UndoServer.UndoNames.Clear();
+                record.Undo(d); d.RaiseUndoStateChanged(GH_UndoOperation.Undo);
+                Assert(g.ObjectIDs.SequenceEqual(new[] { middle.InstanceGuid })
+                    && middle.ObjectIDs.SequenceEqual(new[] { leaf.InstanceGuid, o.InstanceGuid })
+                    && leaf.ObjectIDs.SequenceEqual(new[] { a.InstanceGuid, b.InstanceGuid }) && d.Objects.Contains(b),
+                    "batch Undo lost the original hierarchy or deleted component");
+                record.Redo(d);
+                d.UndoServer.UndoRecords.Add(record); d.UndoServer.UndoNames.Add("Delete");
+                d.RaiseUndoStateChanged(GH_UndoOperation.Redo);
+                Assert(g.ObjectIDs.Count == 2 && g.ObjectIDs.Contains(a.InstanceGuid)
+                    && g.ObjectIDs.Contains(o.InstanceGuid) && !d.Objects.Contains(b)
+                    && record.Actions.Count == 4 && d.UndoServer.UndoCount == 1,
+                    "batch Redo changed promoted contents or recorded another undo step");
+            }
+        });
+        Check("Ungrouping preserves an unrelated pending external move", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var other = new Obj(1060);
+            var child = AddGroup(d, o, other);
+            var parent = AddGroup(d, child);
+            a.Move(500);
+            d.Delete(child);
+            Assert(parent.ObjectIDs.Contains(o.InstanceGuid) && parent.ObjectIDs.Contains(other.InstanceGuid),
+                "ungrouping lost the contents before Refresh");
+            m.RefreshAllObjects();
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && g.ObjectIDs.Contains(b.InstanceGuid)
+                && parent.ObjectIDs.Contains(o.InstanceGuid) && parent.ObjectIDs.Contains(other.InstanceGuid),
+                "group deletion discarded the pending movement history of an unrelated group");
+        });
+        Check("Disabled membership management leaves nested group deletion to the host", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var child = AddGroup(d, a, b);
+            g.ObjectIDs.Clear(); g.AddObject(child.InstanceGuid);
+            m.Configure(null, d, false, 1, false);
+            var record = d.DeleteWithUndo("Ungroup", child);
+            Assert(g.ObjectIDs.SequenceEqual(new[] { child.InstanceGuid }) && record.Actions.Count == 1
+                && d.UndoServer.UndoCount == 1 && !d.IsModified,
+                "disabled manager promoted members or modified native undo history");
+        });
         Check("Clicking a newly grouped lone component does not nest its group", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
