@@ -166,10 +166,13 @@ namespace Grasshopper.Kernel
     public class GH_DocUndoEventArgs : EventArgs
     {
         public GH_UndoOperation Operation;
+        public Grasshopper.Kernel.Undo.GH_UndoRecord Record;
     }
     public class UndoServer
     {
         public List<string> UndoNames = new();
+        public List<Grasshopper.Kernel.Undo.GH_UndoRecord> UndoRecords = new();
+        public List<Guid> UndoGuids => UndoRecords.Select(record => record.Guid).ToList();
         public int UndoCount => UndoNames.Count;
     }
     public class UndoUtil
@@ -210,9 +213,74 @@ namespace Grasshopper.Kernel
         }
         public void Delete(IGH_DocumentObject obj)
         {
-            Objects.Remove(obj);
-            ObjectsDeleted?.Invoke(this, new GH_DocObjectEventArgs { Objects = new() { obj } });
+            Delete(new[] { obj });
         }
+        public void Delete(IEnumerable<IGH_DocumentObject> objects)
+        {
+            var deleted = objects.Where(Objects.Contains).ToList();
+            foreach (var obj in deleted) Objects.Remove(obj);
+            ObjectsDeleted?.Invoke(this, new GH_DocObjectEventArgs { Objects = deleted });
+        }
+        public Grasshopper.Kernel.Undo.GH_UndoRecord DeleteWithUndo(string name, params IGH_DocumentObject[] objects)
+        {
+            var record = new Grasshopper.Kernel.Undo.GH_UndoRecord();
+            foreach (var obj in objects) record.AddAction(new Grasshopper.Kernel.Undo.Actions.GH_RemoveObjectAction(obj));
+            UndoServer.UndoRecords.Insert(0, record);
+            UndoServer.UndoNames.Insert(0, name);
+            UndoStateChanged?.Invoke(this, new GH_DocUndoEventArgs { Operation = GH_UndoOperation.RecordAdded, Record = record });
+            Delete(objects);
+            return record;
+        }
+    }
+}
+namespace Grasshopper.Kernel.Undo
+{
+    public interface IGH_UndoAction
+    {
+        void Undo(GH_Document document);
+        void Redo(GH_Document document);
+    }
+    public class GH_UndoRecord
+    {
+        public Guid Guid { get; } = Guid.NewGuid();
+        public List<IGH_UndoAction> Actions = new();
+        public void AddAction(IGH_UndoAction action) => Actions.Add(action);
+        public void Undo(GH_Document document)
+        {
+            foreach (var action in Actions.AsEnumerable().Reverse()) action.Undo(document);
+        }
+        public void Redo(GH_Document document)
+        {
+            foreach (var action in Actions) action.Redo(document);
+        }
+    }
+}
+namespace Grasshopper.Kernel.Undo.Actions
+{
+    public class GH_RemoveObjectAction : IGH_UndoAction
+    {
+        private readonly IGH_DocumentObject obj;
+        public GH_RemoveObjectAction(IGH_DocumentObject obj) { this.obj = obj; }
+        public void Undo(GH_Document document) => document.Add(obj);
+        public void Redo(GH_Document document) => document.Delete(obj);
+    }
+    public class GH_GenericObjectAction : IGH_UndoAction
+    {
+        private readonly GH_Group group;
+        private List<Guid> members;
+        public GH_GenericObjectAction(GH_Group group)
+        {
+            this.group = group;
+            members = new(group.ObjectIDs);
+        }
+        public void Undo(GH_Document document)
+        {
+            var current = new List<Guid>(group.ObjectIDs);
+            group.ObjectIDs.Clear();
+            group.ObjectIDs.AddRange(members);
+            members = current;
+        }
+        public void Redo(GH_Document document) => Undo(document);
     }
 }
 namespace Grasshopper.Kernel.Special

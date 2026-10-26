@@ -9,6 +9,7 @@ aectooling by tomoS
 - Adds moved or newly placed objects to the innermost Grasshopper group whose visual boundary contains the object center.
 - Removes objects from a group only after the object center leaves that group beyond the configured exit buffer.
 - Keeps a carried group's members together and preserves nested groups while their individual members change.
+- Keeps surviving contents in the parent group when a nested group is deleted or ungrouped.
 - Adds a dragged group to another group when its whole bounding box fits inside the destination.
 - With objects selected and the canvas focused, tap `G` twice within 650 ms, then click one destination group to add them in one step. Press `Esc` to cancel.
 - Provides manual refresh and optional debug logging.
@@ -95,6 +96,8 @@ Close Rhino before rebuilding if the plugin is loaded. Public Yak package versio
 
 Ordinary object membership is tested using each object's canvas-space center point. A dragged group uses its full bounding box: it joins the innermost destination that fully encloses it. Moving into an inner or sibling destination transfers the direct parent link while preserving the dragged group's descendants. Otherwise, it leaves its current parent when its box clears the buffered parent boundary. Each object uses its own bounding box for the exit buffer, including when multiple objects are moved together. The minimum exit buffer gives small objects room near the edge. Clicking without moving objects does not change membership. Existing nested group links remain intact when only an individual member changes.
 
+Deleting or ungrouping a nested group promotes its surviving direct contents to its parent groups. Surviving nested groups keep their descendants. If several nested groups are deleted together, their contents pass through to the nearest surviving parents; deleted components are skipped. Native Ungroup/Delete and the membership transfer share one Undo step.
+
 On a canvas drag, a group stays intact when the group itself is selected and all its members move, or when a strict majority of its components are selected and move by the same offset. This also covers dragging a selection from a component without selecting the group. A group's only component is a majority: dragging that selected component carries its group, including when it is the last remaining member. Moving into another group nests the carried group only when its whole bounding box fits; moving out of a parent releases the parent link after the exit buffer while keeping the component's own group and nested descendants intact. Moving one component out of a two-component group still removes that component. To remove the only component from its own group, use Grasshopper's manual group membership commands.
 
 Component movement is tracked using pivots, so resizing labels or other layout changes do not count as component drags. Scribbles retain center-based movement tracking because their corner pivots change when rotating in place. Matching movement offsets allow one canvas unit of layout rounding. When the group itself is selected, this also preserves members whose movement rounds to zero during a small group drag. Empty nested groups and members without usable canvas bounds do not prevent the tracked members from carrying their group. Containment and exit distances still use the visible bounds and object centers described above.
@@ -115,7 +118,7 @@ Run the isolated membership regression checks with the .NET 10 SDK:
 dotnet run --project tests/HopperGroup.RegressionTests -c Release
 ```
 
-These checks compile the production manager against a simulated canvas, group geometry, undo-record server, and completed undo/redo notifications. Undo/redo scenarios restore positions and memberships explicitly before raising the host event. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
+These checks compile the production manager against a simulated canvas, group geometry, undo-record server, and completed undo/redo notifications. Group deletion checks replay simulated removal and membership actions in host order; other undo/redo scenarios restore positions and memberships explicitly before raising the host event. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
 
 On Windows, GG intercepts keys on the focused Grasshopper canvas before the editor can forward them to Rhino. It consumes both taps and their translated characters, requires physical releases between taps, and leaves text fields, modified keys, native canvas interactions, and reserved navigation/menu bindings available to the host. Multiple enabled HopperGroup components share one shortcut owner. Document changes, focus changes, other keys, mouse clicks, and wheel events reset incomplete gestures. Non-Windows builds retain the managed canvas key callbacks.
 
