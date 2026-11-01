@@ -38,6 +38,8 @@ namespace HopperGroup
         private GH_Canvas _canvas;
         private IDisposable _nativeShortcut;
         private GH_UndoRecord _pendingRemovalUndo;
+        private bool _documentSubscribed;
+        private readonly HashSet<string> _reportedErrors = new HashSet<string>();
         private bool _enabled;
         private bool _requestedEnabled;
         private bool _debug;
@@ -65,7 +67,10 @@ namespace HopperGroup
             _shortcutTimestamp = shortcutTimestamp ?? Stopwatch.GetTimestamp;
         }
 
-        public void Configure(HopperGroupComponent owner, GH_Document document, bool enabled, float exitScale, bool debug)
+        public void Configure(HopperGroupComponent owner, GH_Document document, bool enabled, float exitScale, bool debug) =>
+            Guard("Configure", () => ConfigureCore(owner, document, enabled, exitScale, debug));
+
+        private void ConfigureCore(HopperGroupComponent owner, GH_Document document, bool enabled, float exitScale, bool debug)
         {
             var wasEnabled = _enabled;
             var documentChanged = _document != document;
@@ -126,10 +131,13 @@ namespace HopperGroup
                 LastChangeCount = 0;
                 Status = "Disabled";
             }
-            _owner?.UpdateShortcutPrompt();
+            Guard("UpdateShortcutPrompt", () => _owner?.UpdateShortcutPrompt());
         }
 
-        public void RefreshAllObjects()
+        public void RefreshAllObjects() =>
+            Guard("RefreshAllObjects", () => RefreshAllObjectsCore());
+
+        private void RefreshAllObjectsCore()
         {
             if (!_enabled || _document == null)
             {
@@ -142,29 +150,41 @@ namespace HopperGroup
                 selectionContext: SelectionContext.Empty, reconcileExternalMoves: true);
         }
 
-        public void Dispose()
+        public void Dispose() =>
+            Guard("Dispose", () => DisposeCore());
+
+        private void DisposeCore()
         {
             _enabled = false;
             _requestedEnabled = false;
-            UnwireCanvas();
-            UnsubscribeDocument();
-            _groups.Clear();
-            _parentByChild.Clear();
-            ClearDragState();
-            ClearSettledLayout();
-            if (_owner != null)
+            try
             {
-                _owner.ObjectChanged -= OnOwnerChanged;
-                _owner = null;
+                UnwireCanvas();
             }
-            _document = null;
+            finally
+            {
+                UnsubscribeDocument();
+                _groups.Clear();
+                _parentByChild.Clear();
+                ClearDragState();
+                ClearSettledLayout();
+                if (_owner != null)
+                {
+                    _owner.ObjectChanged -= OnOwnerChanged;
+                    _owner = null;
+                }
+                _document = null;
+            }
         }
 
-        private void OnOwnerChanged(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e)
+        private void OnOwnerChanged(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e) =>
+            Guard("OnOwnerChanged", () => OnOwnerChangedCore(sender, e));
+
+        private void OnOwnerChangedCore(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e)
         {
             // Grasshopper does not solve a locked component, so its own Disable
             // command must stop the event handlers without waiting for SolveInstance.
-            if (e.Type == GH_ObjectEventType.Enabled)
+            if (_owner != null && e.Type == GH_ObjectEventType.Enabled)
             {
                 Configure(_owner, _document, _requestedEnabled, _exitScale, _debug);
                 if (_enabled) _owner?.ScheduleOutputRefresh();
@@ -173,11 +193,12 @@ namespace HopperGroup
 
         private void SubscribeDocument()
         {
-            if (_document == null)
+            if (_document == null || _documentSubscribed)
             {
                 return;
             }
 
+            _documentSubscribed = true;
             _document.ObjectsAdded += OnObjectsAdded;
             _document.ObjectsDeleted += OnObjectsDeleted;
             _document.UndoStateChanged += OnUndoStateChanged;
@@ -186,17 +207,21 @@ namespace HopperGroup
         private void UnsubscribeDocument()
         {
             _pendingRemovalUndo = null;
-            if (_document == null)
+            if (_document == null || !_documentSubscribed)
             {
                 return;
             }
 
+            _documentSubscribed = false;
             _document.ObjectsAdded -= OnObjectsAdded;
             _document.ObjectsDeleted -= OnObjectsDeleted;
             _document.UndoStateChanged -= OnUndoStateChanged;
         }
 
-        private void OnUndoStateChanged(object sender, GH_DocUndoEventArgs e)
+        private void OnUndoStateChanged(object sender, GH_DocUndoEventArgs e) =>
+            Guard("OnUndoStateChanged", () => OnUndoStateChangedCore(sender, e));
+
+        private void OnUndoStateChangedCore(object sender, GH_DocUndoEventArgs e)
         {
             if (!_enabled || _handlingDrop)
             {
@@ -244,32 +269,40 @@ namespace HopperGroup
             _canvas.DocumentChanged += OnCanvasDocumentChanged;
             _canvas.MouseWheel += OnCanvasMouseWheel;
             _nativeShortcut = CanvasShortcutHook.Attach(_canvas, CanCaptureShortcut,
-                DispatchNativeShortcut, ResetGroupTaps);
+                DispatchNativeShortcut, () => Guard("ShortcutReset", ResetGroupTaps));
             Log("Subscribed to active Grasshopper canvas mouse events.");
         }
 
         private void UnwireCanvas()
         {
             CancelShortcut();
-            _nativeShortcut?.Dispose();
+            var shortcut = _nativeShortcut;
             _nativeShortcut = null;
-            if (_canvas == null)
+            try
             {
-                return;
+                shortcut?.Dispose();
             }
-
-            _canvas.MouseDown -= OnCanvasMouseDown;
-            _canvas.MouseUp -= OnCanvasMouseUp;
-            _canvas.KeyDown -= OnCanvasKeyDown;
-            _canvas.KeyUp -= OnCanvasKeyUp;
-            _canvas.LostFocus -= OnCanvasLostFocus;
-            _canvas.DocumentChanged -= OnCanvasDocumentChanged;
-            _canvas.MouseWheel -= OnCanvasMouseWheel;
-            _canvas = null;
-            ClearDragState();
+            finally
+            {
+                if (_canvas != null)
+                {
+                    _canvas.MouseDown -= OnCanvasMouseDown;
+                    _canvas.MouseUp -= OnCanvasMouseUp;
+                    _canvas.KeyDown -= OnCanvasKeyDown;
+                    _canvas.KeyUp -= OnCanvasKeyUp;
+                    _canvas.LostFocus -= OnCanvasLostFocus;
+                    _canvas.DocumentChanged -= OnCanvasDocumentChanged;
+                    _canvas.MouseWheel -= OnCanvasMouseWheel;
+                    _canvas = null;
+                }
+                ClearDragState();
+            }
         }
 
-        private void OnObjectsAdded(object sender, GH_DocObjectEventArgs e)
+        private void OnObjectsAdded(object sender, GH_DocObjectEventArgs e) =>
+            Guard("OnObjectsAdded", () => OnObjectsAddedCore(sender, e));
+
+        private void OnObjectsAddedCore(object sender, GH_DocObjectEventArgs e)
         {
             if (!_enabled)
             {
@@ -278,6 +311,11 @@ namespace HopperGroup
 
             foreach (var obj in e.Objects.Where(obj => obj != null && !(obj is GH_Group)))
             {
+                if (!ReferenceEquals(_document.Objects.FirstOrDefault(existing => existing.InstanceGuid == obj.InstanceGuid), obj))
+                {
+                    Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
+                    continue;
+                }
                 _addedObjectIds.Add(obj.InstanceGuid);
                 if (_hasSettledLayout && IsManagedObject(obj))
                 {
@@ -289,7 +327,10 @@ namespace HopperGroup
             OnObjectsChanged(e);
         }
 
-        private void OnObjectsDeleted(object sender, GH_DocObjectEventArgs e)
+        private void OnObjectsDeleted(object sender, GH_DocObjectEventArgs e) =>
+            Guard("OnObjectsDeleted", () => OnObjectsDeletedCore(sender, e));
+
+        private void OnObjectsDeletedCore(object sender, GH_DocObjectEventArgs e)
         {
             if (!_enabled)
             {
@@ -337,15 +378,15 @@ namespace HopperGroup
 
         private int PromoteDeletedGroupContents(IEnumerable<GH_Group> deletedGroups, GH_UndoRecord removalUndo)
         {
-            var deletedById = deletedGroups.ToDictionary(group => group.InstanceGuid);
+            var deletedById = BuildObjectIndex(deletedGroups);
             if (deletedById.Count == 0)
             {
                 return 0;
             }
 
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var changes = 0;
-            foreach (var parent in _document.Objects.OfType<GH_Group>())
+            foreach (var parent in objectsById.Values.OfType<GH_Group>())
             {
                 // Use real membership links, including parents left without visible bounds.
                 // Geometric containment cannot identify the original parent after deletion.
@@ -418,7 +459,10 @@ namespace HopperGroup
             }
         }
 
-        private void OnCanvasMouseDown(object sender, MouseEventArgs e)
+        private void OnCanvasMouseDown(object sender, MouseEventArgs e) =>
+            Guard("OnCanvasMouseDown", () => OnCanvasMouseDownCore(sender, e));
+
+        private void OnCanvasMouseDownCore(object sender, MouseEventArgs e)
         {
             ResetGroupTaps();
             if (!_enabled || _handlingDrop || e.Button != MouseButtons.Left || !IsCurrentCanvasDocument())
@@ -447,7 +491,10 @@ namespace HopperGroup
             Log("Frozen group cache at drag start.");
         }
 
-        private void OnCanvasMouseUp(object sender, MouseEventArgs e)
+        private void OnCanvasMouseUp(object sender, MouseEventArgs e) =>
+            Guard("OnCanvasMouseUp", () => OnCanvasMouseUpCore(sender, e));
+
+        private void OnCanvasMouseUpCore(object sender, MouseEventArgs e)
         {
             if (!_enabled || _handlingDrop || e.Button != MouseButtons.Left || !IsCurrentCanvasDocument())
             {
@@ -522,13 +569,23 @@ namespace HopperGroup
                 externalSnapshot: externalSnapshot);
         }
 
-        private void OnCanvasKeyDown(object sender, KeyEventArgs e)
+        private void OnCanvasKeyDown(object sender, KeyEventArgs e) =>
+            Guard("OnCanvasKeyDown", () => OnCanvasKeyDownCore(sender, e));
+
+        private void OnCanvasKeyDownCore(object sender, KeyEventArgs e)
         {
             if (_nativeShortcut != null && e.KeyCode != Keys.Escape) return;
             HandleShortcutKeyDown(e);
         }
 
         private bool CanCaptureShortcut(Keys key)
+        {
+            var eligible = false;
+            Guard("CanCaptureShortcut", () => eligible = CanCaptureShortcutCore(key));
+            return eligible;
+        }
+
+        private bool CanCaptureShortcutCore(Keys key)
         {
             if (!_enabled || !IsCurrentCanvasDocument() || _handlingDrop
                 || (_owner != null && _owner.Locked) || !_canvas.ModifiersEnabled
@@ -542,7 +599,10 @@ namespace HopperGroup
                 || _document.SelectedObjects().Any(obj => obj != null && obj != _owner));
         }
 
-        private void DispatchNativeShortcut(Keys key, bool down)
+        private void DispatchNativeShortcut(Keys key, bool down) =>
+            Guard("DispatchNativeShortcut", () => DispatchNativeShortcutCore(key, down));
+
+        private void DispatchNativeShortcutCore(Keys key, bool down)
         {
             var args = new KeyEventArgs(key);
             if (down) HandleShortcutKeyDown(args);
@@ -619,19 +679,29 @@ namespace HopperGroup
             }
         }
 
-        private void OnCanvasKeyUp(object sender, KeyEventArgs e)
+        private void OnCanvasKeyUp(object sender, KeyEventArgs e) =>
+            Guard("OnCanvasKeyUp", () => OnCanvasKeyUpCore(sender, e));
+
+        private void OnCanvasKeyUpCore(object sender, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.G) _groupKeyDown = false;
         }
 
-        private void OnCanvasLostFocus(object sender, EventArgs e)
+        private void OnCanvasLostFocus(object sender, EventArgs e) =>
+            Guard("OnCanvasLostFocus", () => OnCanvasLostFocusCore(sender, e));
+
+        private void OnCanvasLostFocusCore(object sender, EventArgs e)
         {
             ResetGroupTaps();
         }
 
-        private void OnCanvasMouseWheel(object sender, MouseEventArgs e) => ResetGroupTaps();
+        private void OnCanvasMouseWheel(object sender, MouseEventArgs e) =>
+            Guard("OnCanvasMouseWheel", ResetGroupTaps);
 
-        private void OnCanvasDocumentChanged(object sender, GH_CanvasDocumentChangedEventArgs e)
+        private void OnCanvasDocumentChanged(object sender, GH_CanvasDocumentChangedEventArgs e) =>
+            Guard("OnCanvasDocumentChanged", () => OnCanvasDocumentChangedCore(sender, e));
+
+        private void OnCanvasDocumentChangedCore(object sender, GH_CanvasDocumentChangedEventArgs e)
         {
             CancelShortcut(_shortcutObjectIds.Count > 0
                 ? "Add to group cancelled: active document changed" : null);
@@ -649,12 +719,12 @@ namespace HopperGroup
             _shortcutObjectIds.Clear();
             ResetGroupTaps();
             if (status != null) Status = status;
-            _owner?.UpdateShortcutPrompt();
+            Guard("UpdateShortcutPrompt", () => _owner?.UpdateShortcutPrompt());
         }
 
         private void AddShortcutSelection(GH_Group target)
         {
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var recordedGroups = new HashSet<Guid>();
             var changes = 0;
             foreach (var id in _shortcutObjectIds)
@@ -775,10 +845,10 @@ namespace HopperGroup
         private void RestoreSettledGroupCache(SelectionContext externalContext)
         {
             _groups.Clear();
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var boundsById = new Dictionary<Guid, RectangleF>();
             var changedGroups = new HashSet<Guid>();
-            foreach (var group in _document.Objects.OfType<GH_Group>())
+            foreach (var group in objectsById.Values.OfType<GH_Group>())
             {
                 var bounds = GetSettledGroupBounds(group, objectsById, boundsById, changedGroups,
                     new HashSet<Guid>(), externalContext);
@@ -888,7 +958,7 @@ namespace HopperGroup
 
         private SelectionContext CreateExternalMovementContext(HashSet<Guid> eligibleIds, MovementSnapshot snapshot)
         {
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var translations = new Dictionary<Guid, PointF?>();
             var carriedIds = new HashSet<Guid>();
             foreach (var group in _document.Objects.OfType<GH_Group>())
@@ -1118,7 +1188,7 @@ namespace HopperGroup
                 return;
             }
 
-            foreach (var group in _document.Objects.OfType<GH_Group>())
+            foreach (var group in BuildObjectIndex(_document.Objects).Values.OfType<GH_Group>())
             {
                 if (TryCreateRegion(group, out var region))
                 {
@@ -1200,7 +1270,7 @@ namespace HopperGroup
             Dictionary<Guid, RectangleF> boundsBeforeMove, SelectionContext allMovedGroups = null)
         {
             var changes = 0;
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var affectedContext = allMovedGroups ?? context;
             foreach (var child in _groups.Where(group => affectedContext.IsCarriedGroup(group.Id)))
             {
@@ -1260,7 +1330,7 @@ namespace HopperGroup
             }
 
             var movedIds = new HashSet<Guid>(movedObjects.Select(obj => obj.InstanceGuid));
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var carriedGroupIds = new HashSet<Guid>();
 
             // A selected group whose entire contents moved is carried by Grasshopper.
@@ -1538,9 +1608,9 @@ namespace HopperGroup
             return false;
         }
 
-        private static List<IGH_DocumentObject> GetManagedObjects(IEnumerable<IGH_DocumentObject> objects)
+        private List<IGH_DocumentObject> GetManagedObjects(IEnumerable<IGH_DocumentObject> objects)
         {
-            return objects
+            return BuildObjectIndex(objects).Values
                 .Where(IsManagedObject)
                 .ToList();
         }
@@ -1601,6 +1671,63 @@ namespace HopperGroup
             group.ExpireCaches();
         }
 
+        internal void Guard(string where, Action action)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception error)
+            {
+                // Reset before doing any host work: even logging/output refresh can fail
+                // while the document or canvas is being torn down.
+                ClearDragState();
+                ResetGroupTaps();
+                _shortcutObjectIds.Clear();
+                _pendingRemovalUndo = null;
+                _handlingDrop = false;
+                ClearSettledLayout();
+                LastChangeCount = 0;
+                Status = "Error - see Log";
+                ReportError(where, error);
+                try { _owner?.ScheduleOutputRefresh(); }
+                catch (Exception refreshError) { ReportError("Error output refresh", refreshError); }
+            }
+        }
+
+        internal void ReportError(string where, Exception error)
+        {
+            var message = $"{where}: {error.GetType().Name}: {error.Message}";
+            AppendLog(message);
+            if (_reportedErrors.Add(error.GetType().FullName + ": " + error.Message))
+            {
+                try { Rhino.RhinoApp.WriteLine($"[HopperGroup] {message}"); }
+                catch (Exception) { /* The Log output still holds the error if Rhino is unavailable. */ }
+            }
+        }
+
+        private Dictionary<Guid, T> BuildObjectIndex<T>(IEnumerable<T> objects) where T : IGH_DocumentObject
+        {
+            var result = new Dictionary<Guid, T>();
+            foreach (var obj in objects)
+            {
+                if (obj == null) continue;
+                if (result.ContainsKey(obj.InstanceGuid))
+                {
+                    Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
+                    continue;
+                }
+                result.Add(obj.InstanceGuid, obj);
+            }
+            return result;
+        }
+
+        private void AppendLog(string message)
+        {
+            _debugLog.Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] {message}");
+            if (_debugLog.Count > DebugLogLineLimit) _debugLog.Dequeue();
+        }
+
         private void Log(string message)
         {
             if (!_debug)
@@ -1608,9 +1735,7 @@ namespace HopperGroup
                 return;
             }
 
-            var line = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
-            _debugLog.Enqueue(line);
-            if (_debugLog.Count > DebugLogLineLimit) _debugLog.Dequeue();
+            AppendLog(message);
             Rhino.RhinoApp.WriteLine($"[HopperGroup] {message}");
         }
 
