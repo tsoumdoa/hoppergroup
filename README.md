@@ -48,19 +48,42 @@ The component is available under `Params > Util > Hopper Group`.
 - `Changes`: membership changes from the last operation.
 - `Log`: the most recent 200 debug lines. Rhino command history receives every debug message.
 
-## Build
+## Development
+
+Install the .NET 10 SDK to build the solution and run both executable test suites. The plugin itself also builds with the .NET 9 SDK. The Windows input suite requires Windows and the Windows Desktop runtime; the portable shell scripts/installers work in Git for Windows sh and macOS, but the full gate and release checks need Windows.
 
 ```bash
 dotnet build HopperGroup.csproj
+dotnet build HopperGroup.slnx
+dotnet run --project tests/HopperGroup.RegressionTests
+dotnet run --project tests/HopperGroup.WindowsInputTests
 ```
 
-Build outputs:
+`HopperGroup.slnx` is the single solution and includes the plugin and both test runners. Tests are console programs: use `dotnet run`, not `dotnet test`. SDK 9.0.3xx or newer understands the solution format; building its .NET 10 test projects requires SDK 10.
+
+Plugin build outputs:
 
 - `bin/Debug/net48/HopperGroup.gha`
 - `bin/Debug/net7.0/HopperGroup.gha`
 - `bin/Debug/net7.0-windows/HopperGroup.gha`
 
 Close Rhino before rebuilding if the plugin is loaded.
+
+Install the tracked local pre-commit hook once per clone (Git for Windows includes the required shell):
+
+```bash
+sh scripts/install-hooks.sh
+```
+
+Or from PowerShell:
+
+```powershell
+./scripts/install-hooks.ps1
+```
+
+Both installers set `git config core.hooksPath .githooks`. The hook skips commits with no staged code or tooling changes. It watches `*.cs`, `*.csproj`, `*.sln*`, `Directory.Build.*`, `tests/**`, `.githooks/**`, and `scripts/**`; otherwise it builds every plugin target and runs both test suites. It uses quiet, incremental Debug builds to share normal development outputs and avoid a second Release build cache. Restore stays enabled so fresh clones work. It prints elapsed time and failure details.
+
+The hook checks the working tree without stashing or changing the index, so partially staged edits and untracked work remain safe. If unstaged or untracked code/tooling exists, it warns that the staged code may differ from what was tested. Stage the intended changes and rerun when that distinction matters. To run it manually, use `sh .githooks/pre-commit`; to bypass a gate when necessary, use `git commit --no-verify`. These are local quality gates; no CI is configured.
 
 ## Release / Yak Packaging
 
@@ -70,13 +93,21 @@ Create a local Yak package with:
 ./scripts/release-yak.sh 0.2.8
 ```
 
-The script first runs the regression checks using the .NET 10 SDK. If they pass, it updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`.
+Run the Bash release script on Windows (Git Bash) with the .NET 10 SDK. It first runs both the regression and Windows input checks. If they pass, it updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`. Failures restore the source versions until a push succeeds; a failed test-server search after publishing keeps the published version.
 
 If this is your first Yak publish from this machine, log in first:
 
 ```bash
 "/Applications/Rhino 8.app/Contents/Resources/bin/yak" login
 ```
+
+On Windows, use PowerShell:
+
+```powershell
+& "C:\Program Files\Rhino 8\System\Yak.exe" login
+```
+
+The release script finds `yak` on PATH or in the default Rhino 8 macOS/Windows location. Set `YAK_BIN` to override the executable path.
 
 To rehearse publishing on McNeel's daily-wiped test server:
 

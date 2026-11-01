@@ -1,3 +1,7 @@
 <Solution>
   <Project Path="HopperGroup.csproj" />
+  <Folder Name="/tests/">
+    <Project Path="tests/HopperGroup.RegressionTests/HopperGroup.RegressionTests.csproj" />
+    <Project Path="tests/HopperGroup.WindowsInputTests/HopperGroup.WindowsInputTests.csproj" />
+  </Folder>
 </Solution>
