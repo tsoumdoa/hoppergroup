@@ -5,5 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../GroupMembershipManager.cs" Link="GroupMembershipManager.cs" />
+    <Compile Include="../../HopperGroupComponent.cs" Link="HopperGroupComponent.cs" />
+    <Compile Include="../../DocumentSessionRegistry.cs" Link="DocumentSessionRegistry.cs" />
   </ItemGroup>
 </Project>

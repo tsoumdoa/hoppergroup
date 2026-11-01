@@ -267,6 +267,56 @@ internal static class Program
             f.Manager.Dispose(); Tap(f.Canvas, Keys.G);
             Assert(f.ForwardedKeys == 1 && f.Characters == 1, "disposed hook kept consuming G");
         });
+        Check(form, "Document sessions transfer native shortcuts and unload removes the HWND registration", f =>
+        {
+            f.Manager.Dispose();
+            var first = new HopperGroupComponent();
+            var second = new HopperGroupComponent();
+            f.Document.Add(first); f.Document.Add(second);
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(first.Manager.ShortcutPrompt.Length > 0 && second.Manager.ShortcutPrompt.Length == 0
+                && f.Document.HandlerCount == 3, "sessions duplicated native shortcut work");
+            first.Locked = true;
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(second.Manager.ShortcutPrompt.Length > 0 && first.Manager.ShortcutPrompt.Length == 0,
+                "native shortcut did not transfer to the successor");
+            second.DocumentContextChanged(f.Document, GH_DocumentContext.Unloaded);
+            Assert(f.Document.HandlerCount == 0, "unload retained document handlers");
+            var forwarded = f.ForwardedKeys;
+            Tap(f.Canvas, Keys.G);
+            Assert(f.ForwardedKeys == forwarded + 1, "unload kept the HWND shortcut registered");
+            first.Locked = false;
+            first.DocumentContextChanged(f.Document, GH_DocumentContext.Loaded);
+            second.DocumentContextChanged(f.Document, GH_DocumentContext.Loaded);
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(first.Manager.ShortcutPrompt.Length > 0 && second.Manager.ShortcutPrompt.Length == 0
+                && f.Document.HandlerCount == 3, "reload failed to reattach one native owner");
+            first.DocumentContextChanged(f.Document, GH_DocumentContext.Close);
+        });
+        Check(form, "Native eligibility exceptions are contained and GG can recover", f =>
+        {
+            f.Document.SelectionError = new InvalidOperationException("Injected native shortcut eligibility failure");
+            Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.DebugLog.Contains("CanCaptureShortcut"), "native eligibility callback escaped its guard");
+            f.Document.SelectionError = null;
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.ShortcutPrompt.Length > 0, "native shortcut did not recover");
+        });
+        Check(form, "Native dispatch exceptions reset the physical tap and allow fresh GG", f =>
+        {
+            f.Manager.Dispose();
+            var fail = true;
+            using var manager = new GroupMembershipManager(() => fail
+                ? throw new InvalidOperationException("Injected native shortcut dispatch failure")
+                : System.Diagnostics.Stopwatch.GetTimestamp());
+            manager.Configure(null, f.Document, true, 1, false);
+            Tap(f.Canvas, Keys.G);
+            Assert(manager.DebugLog.Contains("DispatchNativeShortcut") && manager.ShortcutPrompt.Length == 0,
+                "native dispatch failure escaped or left a pending shortcut");
+            fail = false;
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(manager.ShortcutPrompt.Length > 0, "dispatch failure prevented fresh native taps");
+        });
     }
 
     private sealed class Fixture : IDisposable

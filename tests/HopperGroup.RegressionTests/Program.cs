@@ -55,6 +55,7 @@ class Program
     }
     static void Main()
     {
+        RobustnessTests.Run(Check);
         Check("Deleting a nested group promotes its components to its direct parent", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -1250,6 +1251,7 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, true);
             m.Configure(owner, d, false, 1, true);
             var log = m.DebugLog;
@@ -1273,6 +1275,7 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, false);
             c.Down();
             owner.Locked = true;
@@ -1302,6 +1305,7 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, false, 1, false);
             owner.Locked = true;
             owner.Locked = false;
@@ -1314,6 +1318,7 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, false);
             m.Dispose();
             owner.Locked = true; owner.Locked = false;
@@ -1468,7 +1473,8 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var second = new Obj(1100); d.Add(second);
-            var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+            var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, false);
             d.Selection.Add(o); d.Selection.Add(second); c.GG();
             Assert(owner.Message.Contains("Add 2 object(s)"), "arming GG did not display the captured count");
@@ -1483,7 +1489,8 @@ class Program
         Check("Deleting the last captured GG object cancels its status and visible prompt", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
-            var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+            var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, false);
             d.Selection.Add(o); c.GG(); d.Delete(o);
             Assert(m.ShortcutPrompt == string.Empty && owner.Message == string.Empty
@@ -1499,7 +1506,8 @@ class Program
             Check($"{operation} clears the visible GG prompt", () =>
             {
                 var (d, c, m, g, a, b, o) = Setup();
-                var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+                var owner = new HopperGroupComponent();
+                m.Dispose(); m = owner.Manager;
                 m.Configure(owner, d, true, 1, false);
                 d.Selection.Add(o); c.GG();
                 Assert(owner.Message != string.Empty, "GG was not visibly armed before the undo notification");
@@ -1514,7 +1522,8 @@ class Program
             Check($"Disabling clears the GG prompt without solving its owner (host Disable: {hostDisable})", () =>
             {
                 var (d, c, m, g, a, b, o) = Setup();
-                var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+                var owner = new HopperGroupComponent();
+                m.Dispose(); m = owner.Manager;
                 m.Configure(owner, d, true, 1, false);
                 d.Selection.Add(o); c.GG();
                 var refreshCount = owner.RefreshCount;

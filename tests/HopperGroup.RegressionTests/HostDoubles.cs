@@ -8,7 +8,7 @@ using Grasshopper.GUI.Canvas;
 using HopperGroup;
 
 // Minimal host doubles. Group rectangles follow member rectangles, as in Grasshopper.
-// These tests exercise the unchanged manager source, not a replacement algorithm.
+// These tests compile the real manager and component sources against host doubles.
 #if !REAL_WINFORMS
 namespace System.Windows.Forms
 {
@@ -44,7 +44,11 @@ namespace Grasshopper
     public static class Instances
     {
         public static GH_Canvas ActiveCanvas;
-        public static void InvalidateCanvas() { }
+        public static Exception InvalidateError;
+        public static void InvalidateCanvas()
+        {
+            if (InvalidateError != null) throw InvalidateError;
+        }
     }
 }
 namespace Grasshopper.GUI.Canvas
@@ -132,7 +136,7 @@ namespace Grasshopper.Kernel
     {
         public Guid InstanceGuid
         {
-            get;
+            get; set;
         } = Guid.NewGuid();
         public Attributes Attributes
         {
@@ -197,6 +201,12 @@ namespace Grasshopper.Kernel
         {
             UndoUtil = new(UndoServer);
         }
+                public Exception ScheduleError;
+        public void ScheduleSolution(int delay, Action<GH_Document> callback)
+        {
+            if (ScheduleError != null) throw ScheduleError;
+            callback(this);
+        }
         public bool IsModified;
         public event EventHandler<GH_DocObjectEventArgs> ObjectsAdded, ObjectsDeleted;
         public event EventHandler<GH_DocUndoEventArgs> UndoStateChanged;
@@ -205,10 +215,16 @@ namespace Grasshopper.Kernel
         // Tests restore the recorded layout first, matching the host's completed Undo/Redo event.
         public void RaiseUndoStateChanged(GH_UndoOperation operation) =>
             UndoStateChanged?.Invoke(this, new GH_DocUndoEventArgs { Operation = operation });
-        public List<IGH_DocumentObject> SelectedObjects() => Selection;
+        public Exception SelectionError;
+        public List<IGH_DocumentObject> SelectedObjects()
+        {
+            if (SelectionError != null) throw SelectionError;
+            return Selection;
+        }
         public void Add(IGH_DocumentObject obj)
         {
             Objects.Add(obj);
+            if (obj is GH_Component component) component.AddedToDocument(this);
             ObjectsAdded?.Invoke(this, new GH_DocObjectEventArgs { Objects = new() { obj } });
         }
         public void Delete(IGH_DocumentObject obj)
@@ -218,7 +234,11 @@ namespace Grasshopper.Kernel
         public void Delete(IEnumerable<IGH_DocumentObject> objects)
         {
             var deleted = objects.Where(Objects.Contains).ToList();
-            foreach (var obj in deleted) Objects.Remove(obj);
+            foreach (var obj in deleted)
+            {
+                Objects.Remove(obj);
+                if (obj is GH_Component component) component.RemovedFromDocument(this);
+            }
             ObjectsDeleted?.Invoke(this, new GH_DocObjectEventArgs { Objects = deleted });
         }
         public Grasshopper.Kernel.Undo.GH_UndoRecord DeleteWithUndo(string name, params IGH_DocumentObject[] objects)
@@ -330,8 +350,49 @@ namespace HopperGroup
             Action<System.Windows.Forms.Keys, bool> dispatch, Action reset) => null;
     }
 #endif
-    public class HopperGroupComponent : Obj
+}
+namespace Rhino
+{
+    public static class RhinoApp
     {
+        public static readonly List<string> Lines = new();
+        public static void WriteLine(string s) { Lines.Add(s); }
+    }
+}
+
+#if !REAL_WINFORMS
+namespace System.Drawing
+{
+    public class Bitmap
+    {
+        public Bitmap(System.IO.Stream stream) { }
+    }
+}
+#endif
+namespace Grasshopper.Kernel
+{
+    public enum GH_DocumentContext { Unknown, None, Open, Close, Loaded, Unloaded, Lock, Unlock }
+    public enum GH_ParamAccess { item }
+    public enum GH_RuntimeMessageLevel { Remark }
+    public interface IGH_DataAccess
+    {
+        bool GetData<T>(int index, ref T value);
+        void SetData(int index, object value);
+    }
+    public class GH_Component : Obj
+    {
+        public class GH_InputParamManager
+        {
+            public void AddBooleanParameter(string name, string nick, string description, GH_ParamAccess access, bool value) { }
+            public void AddNumberParameter(string name, string nick, string description, GH_ParamAccess access, double value) { }
+        }
+        public class GH_OutputParamManager
+        {
+            public void AddTextParameter(string name, string nick, string description, GH_ParamAccess access) { }
+            public void AddIntegerParameter(string name, string nick, string description, GH_ParamAccess access) { }
+        }
+        public GH_Component(string name, string nick, string description, string category, string subcategory) { }
+        private GH_Document document;
         private bool locked;
         public event Action<IGH_DocumentObject, GH_ObjectChangedEventArgs> ObjectChanged;
         public bool Locked
@@ -345,10 +406,38 @@ namespace HopperGroup
             }
         }
         public int RefreshCount;
-        public Func<string> ShortcutPromptProvider;
-        public string Message { get; private set; } = string.Empty;
-        public void UpdateShortcutPrompt() { Message = ShortcutPromptProvider?.Invoke() ?? string.Empty; }
-        public void ScheduleOutputRefresh() { UpdateShortcutPrompt(); RefreshCount++; }
+        public Exception ExpireError;
+        public string Message { get; set; } = string.Empty;
+        public List<string> RuntimeMessages = new();
+        public void ClearRuntimeMessages() => RuntimeMessages.Clear();
+        public void AddRuntimeMessage(GH_RuntimeMessageLevel level, string message) => RuntimeMessages.Add(message);
+        public void ExpireSolution(bool recompute)
+        {
+            if (ExpireError != null) throw ExpireError;
+            RefreshCount++;
+        }
+        public GH_Document OnPingDocument() => document;
+        public virtual void AddedToDocument(GH_Document value) { document = value; }
+        public virtual void RemovedFromDocument(GH_Document value) { document = null; }
+        public virtual void DocumentContextChanged(GH_Document value, GH_DocumentContext context) { }
+        protected virtual void RegisterInputParams(GH_InputParamManager manager) { }
+        protected virtual void RegisterOutputParams(GH_OutputParamManager manager) { }
+        protected virtual void SolveInstance(IGH_DataAccess data) { }
+        protected virtual Bitmap Icon => null;
+        public virtual Guid ComponentGuid => Guid.Empty;
+        public void Solve(IGH_DataAccess data) { ClearRuntimeMessages(); SolveInstance(data); }
+    }
+    public class DataAccess : IGH_DataAccess
+    {
+        public bool Enabled = true, Refresh, Debug;
+        public double ExitScale = 1;
+        public readonly Dictionary<int, object> Outputs = new();
+        public bool GetData<T>(int index, ref T value)
+        {
+            object input = index == 0 ? Enabled : index == 1 ? ExitScale : index == 2 ? Refresh : Debug;
+            value = (T)input;
+            return true;
+        }
+        public void SetData(int index, object value) { Outputs[index] = value; }
     }
 }
-namespace Rhino { public static class RhinoApp { public static void WriteLine(string s) { } } }
