@@ -1097,6 +1097,8 @@ namespace HopperGroup
                             .Select(group => group.Id)));
                         var boundsBeforeMove = _groups.ToDictionary(group => group.Id, group => group.Bounds);
                         var destinationContext = externalSnapshot == null ? combinedContext : selectionContext;
+                        var settledExitReferences = _groups.ToDictionary(group => group.Id, group => group.Bounds);
+                        var nativeExitReferences = externalSnapshot != null ? CreateExitReferences(nativeMovedIds) : null;
                         foreach (var obj in externallyMoved)
                         {
                             // External carrying protects members only until a new native drag moves
@@ -1105,7 +1107,9 @@ namespace HopperGroup
                             var memberContext = externalSnapshot != null && nativeMovedIds.Contains(obj.InstanceGuid)
                                 ? selectionContext
                                 : combinedContext;
-                            LastChangeCount += UpdateObjectMembership(obj, recordedGroups, memberContext, destinationContext);
+                            var exitReferences = nativeExitReferences != null && nativeMovedIds.Contains(obj.InstanceGuid)
+                                ? nativeExitReferences : settledExitReferences;
+                            LastChangeCount += UpdateObjectMembership(obj, recordedGroups, memberContext, exitReferences, destinationContext);
                         }
 
                         RebuildGroupCache();
@@ -1133,9 +1137,12 @@ namespace HopperGroup
                     ? _groups.ToDictionary(group => group.Id, group => group.Bounds)
                     : null;
 
+                var gestureExitReferences = expireOwner
+                    ? CreateExitReferences(new HashSet<Guid>(objects.Select(obj => obj.InstanceGuid)))
+                    : _groups.ToDictionary(group => group.Id, group => group.Bounds);
                 foreach (var obj in objects)
                 {
-                    LastChangeCount += UpdateObjectMembership(obj, recordedGroups, selectionContext);
+                    LastChangeCount += UpdateObjectMembership(obj, recordedGroups, selectionContext, gestureExitReferences);
                 }
 
                 if (selectionContext.HasCarriedGroups)
@@ -1520,8 +1527,45 @@ namespace HopperGroup
             }
         }
 
+        // Infer each side's host padding from the live outline, then apply it to
+        // stationary contents only. Recurse through nested groups so a moving leaf
+        // cannot stretch an ancestor's reference through its child outline.
+        private Dictionary<Guid, RectangleF> CreateExitReferences(HashSet<Guid> movingIds)
+        {
+            var objectsById = BuildObjectIndex(_document.Objects);
+            var references = new Dictionary<Guid, RectangleF>();
+            RectangleF? StationaryBounds(GH_Group group, HashSet<Guid> visiting)
+            {
+                if (!visiting.Add(group.InstanceGuid)) return null;
+                RectangleF? contents = null, stationary = null;
+                foreach (var id in group.ObjectIDs)
+                {
+                    if (!objectsById.TryGetValue(id, out var member) || member.Attributes == null) continue;
+                    var bounds = member is GH_Group child ? GetCurrentGroupBounds(child) : member.Attributes.Bounds;
+                    if (bounds.Width <= 0 || bounds.Height <= 0) continue;
+                    contents = contents.HasValue ? RectangleF.Union(contents.Value, bounds) : bounds;
+                    var remaining = member is GH_Group nested ? StationaryBounds(nested, visiting)
+                        : movingIds.Contains(id) ? (RectangleF?)null : bounds;
+                    if (remaining.HasValue)
+                        stationary = stationary.HasValue ? RectangleF.Union(stationary.Value, remaining.Value) : remaining;
+                }
+                visiting.Remove(group.InstanceGuid);
+                if (!contents.HasValue || !stationary.HasValue) return null;
+                var outline = GetCurrentGroupBounds(group);
+                var all = contents.Value;
+                var kept = stationary.Value;
+                return RectangleF.FromLTRB(outline.Left + kept.Left - all.Left,
+                    outline.Top + kept.Top - all.Top, outline.Right + kept.Right - all.Right,
+                    outline.Bottom + kept.Bottom - all.Bottom);
+            }
+            foreach (var group in _groups)
+                references[group.Id] = StationaryBounds(group.Group, new HashSet<Guid>()) ?? group.Bounds;
+            return references;
+        }
+
         private int UpdateObjectMembership(IGH_DocumentObject obj, HashSet<Guid> recordedGroups,
-            SelectionContext selectionContext, SelectionContext destinationContext = null)
+            SelectionContext selectionContext, Dictionary<Guid, RectangleF> exitReferences,
+            SelectionContext destinationContext = null)
         {
             if (!IsManagedObject(obj))
             {
@@ -1529,17 +1573,21 @@ namespace HopperGroup
             }
 
             var center = GetObjectCenter(obj);
-            var target = FindInnermostContainingGroup(center, destinationContext ?? selectionContext);
             var currentGroups = _groups
                 .Where(region => region.Group.ObjectIDs.Contains(obj.InstanceGuid))
                 .ToList();
+            RectangleF ExitBounds(GroupRegion region) => GetExitBounds(
+                exitReferences[region.Id], obj.Attributes.Bounds);
+            var target = FindInnermostContainingGroup(center, destinationContext ?? selectionContext,
+                region => !currentGroups.Contains(region) || selectionContext.IsCarriedGroup(region.Id)
+                    || ExitBounds(region).Contains(center));
 
             var changes = 0;
             var retainedMembership = false;
 
             foreach (var current in currentGroups)
             {
-                var exitBounds = GetExitBounds(current.Bounds, obj.Attributes.Bounds);
+                var exitBounds = ExitBounds(current);
                 if (selectionContext.IsCarriedGroup(current.Id)
                     || (target != null && current.Id == target.Id)
                     || (exitBounds.Contains(center)
@@ -1568,15 +1616,17 @@ namespace HopperGroup
             return changes;
         }
 
-        private GroupRegion FindInnermostContainingGroup(PointF point, SelectionContext selectionContext)
+        private GroupRegion FindInnermostContainingGroup(PointF point, SelectionContext selectionContext,
+            Func<GroupRegion, bool> eligible = null)
         {
             if (!selectionContext.HasCarriedGroups)
             {
-                return _groups.FirstOrDefault(region => region.Bounds.Contains(point));
+                return _groups.FirstOrDefault(region => region.Bounds.Contains(point) && (eligible == null || eligible(region)));
             }
 
             // A carried group receives new members at its destination, not its old footprint.
             return _groups
+                .Where(region => eligible == null || eligible(region))
                 .Select(region => selectionContext.IsCarriedGroup(region.Id)
                     ? new GroupRegion(region.Group, GetCurrentGroupBounds(region.Group))
                     : region)
