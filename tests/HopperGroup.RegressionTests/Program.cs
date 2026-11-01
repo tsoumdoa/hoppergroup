@@ -1270,7 +1270,7 @@ class Program
                 && d.UndoServer.UndoCount == 0 && !d.IsModified, "disabled manager edited memberships or undo history");
             Assert(g.CacheExpirations == cacheExpirations && m.DebugLog == log && owner.RefreshCount == 0,
                 "disabled manager scanned groups, logged, or recomputed its owner");
-            Assert(m.LastChangeCount == 0 && m.Status == "Disabled", "disabled status retained old changes");
+            Assert(m.LastChangeCount == 0 && m.Status == "Off", "disabled status retained old changes");
         });
         Check("Grasshopper Disable stops an in-progress drag and unlock uses the current layout", () =>
         {

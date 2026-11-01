@@ -17,6 +17,9 @@ namespace HopperGroup
         private bool _active;
         private bool _inactive;
         private bool _refreshingOutputs;
+        private bool _outputRefreshPending;
+        private int _outputRefreshVersion;
+        private Tuple<string, int, int, string> _lastOutputValues;
 
         internal bool SessionEligible => _enabled && !Locked && !_contextUnloaded;
         internal GroupMembershipManager Manager => _manager;
@@ -36,14 +39,14 @@ namespace HopperGroup
         {
             pManager.AddBooleanParameter("Enabled", "Enabled", "Enable automatic group membership updates.", GH_ParamAccess.item, true);
             pManager.AddNumberParameter("Exit Scale", "Exit", "Scales the exit buffer: 1.5 times object size, clamped to 40–120 canvas units before scaling. Zero means no buffer.", GH_ParamAccess.item, _exitScale);
-            pManager.AddBooleanParameter("Refresh", "Refresh", "Toggle to rescan all groups and repair memberships for all objects.", GH_ParamAccess.item, false);
+            pManager.AddBooleanParameter("Refresh", "Refresh", "Re-apply membership from the layout, overwriting manual membership edits. Skips [lock] groups. Ctrl+Z undoes.", GH_ParamAccess.item, false);
             pManager.AddBooleanParameter("Debug", "Debug", "Enable debug logging.", GH_ParamAccess.item, false);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
             pManager.AddTextParameter("Status", "Status", "Current HopperGroup status.", GH_ParamAccess.item);
-            pManager.AddIntegerParameter("Groups", "Groups", "Number of cached group regions.", GH_ParamAccess.item);
+            pManager.AddIntegerParameter("Groups", "Groups", "Number of groups being tracked", GH_ParamAccess.item);
             pManager.AddIntegerParameter("Changes", "Changes", "Number of membership changes from the last operation.", GH_ParamAccess.item);
             pManager.AddTextParameter("Log", "Log", "Debug log messages.", GH_ParamAccess.item);
         }
@@ -85,10 +88,11 @@ namespace HopperGroup
 
             if (_inactive)
                 AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "Inactive: another HopperGroup component controls this document");
-            DA.SetData(0, _inactive ? "Inactive (another HopperGroup is active)" : _active ? _manager.Status : "Disabled");
+            DA.SetData(0, OutputStatus);
             DA.SetData(1, _active ? _manager.GroupCount : 0);
             DA.SetData(2, _active ? _manager.LastChangeCount : 0);
             DA.SetData(3, _manager.DebugLog);
+            _lastOutputValues = CaptureOutputValues();
         }
 
         public override void AddedToDocument(GH_Document document)
@@ -166,6 +170,9 @@ namespace HopperGroup
 
         internal void ReleaseSession()
         {
+            _outputRefreshVersion++;
+            _outputRefreshPending = false;
+            _lastOutputValues = null;
             _sessionDocument = null;
             _contextUnloaded = true;
             _active = false;
@@ -189,25 +196,40 @@ namespace HopperGroup
                 UpdateShortcutPrompt();
                 var document = OnPingDocument();
                 if (document == null || Locked || _contextUnloaded || _refreshingOutputs) return;
+                if (_outputRefreshPending || Equals(_lastOutputValues, CaptureOutputValues())) return;
+                _outputRefreshPending = true;
+                var version = _outputRefreshVersion;
                 document.ScheduleSolution(1, scheduledDocument =>
                 {
+                    if (version != _outputRefreshVersion) return;
                     _refreshingOutputs = true;
                     try
                     {
                         _manager.Guard("Scheduled output refresh", () =>
                         {
-                            if (!Locked && !_contextUnloaded && ReferenceEquals(scheduledDocument, OnPingDocument()))
+                            if (!Locked && !_contextUnloaded && ReferenceEquals(scheduledDocument, OnPingDocument())
+                                && !Equals(_lastOutputValues, CaptureOutputValues()))
+                            {
                                 ExpireSolution(false);
+                                _lastOutputValues = CaptureOutputValues();
+                            }
                         });
                     }
-                    finally { _refreshingOutputs = false; }
+                    finally { _refreshingOutputs = false; _outputRefreshPending = false; }
                 });
             }
             catch (Exception error)
             {
+                _outputRefreshPending = false;
                 _manager.ReportError("ScheduleOutputRefresh", error);
             }
         }
+
+        private string OutputStatus => _inactive ? "Inactive (another HopperGroup is active)"
+            : _active ? _manager.Status : "Off";
+
+        private Tuple<string, int, int, string> CaptureOutputValues() => Tuple.Create(OutputStatus,
+            _active ? _manager.GroupCount : 0, _active ? _manager.LastChangeCount : 0, _manager.DebugLog);
 
         protected override Bitmap Icon
         {

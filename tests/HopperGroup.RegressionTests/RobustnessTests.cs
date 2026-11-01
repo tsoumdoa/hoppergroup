@@ -186,6 +186,8 @@ internal static class RobustnessTests
         {
             using var f = new Fixture();
             var component = f.Add();
+            component.Solve(new DataAccess { Debug = true });
+            component.Manager.RefreshAllObjects(); // Change Log so an output refresh is needed.
             f.Document.ScheduleError = new InvalidOperationException("Injected schedule failure");
             component.ScheduleOutputRefresh();
             Assert(component.Manager.DebugLog.Contains("ScheduleOutputRefresh: InvalidOperationException: Injected schedule failure"), "scheduling catch swallowed the failure");

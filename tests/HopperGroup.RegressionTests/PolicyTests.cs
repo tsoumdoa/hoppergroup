@@ -46,6 +46,54 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        check("Output changes coalesce while a refresh solution is pending", () =>
+        {
+            using var f = new Fixture();
+            var member = new Obj(10); var group = f.Group(new Obj(0), new Obj(100), member);
+            var owner = new HopperGroupComponent(); f.Document.Add(owner); owner.Solve(new DataAccess());
+            try
+            {
+                f.Document.DeferSolutions = true;
+                var schedules = f.Document.ScheduleCount; var refreshes = owner.RefreshCount;
+                f.Drag(member, 500); f.Drag(member, -500);
+                Assert(f.Document.ScheduleCount == schedules + 1 && f.Document.ScheduledSolutions.Count == 1,
+                    "pending output solution was scheduled twice");
+                f.Document.ScheduledSolutions.Dequeue()(f.Document);
+                Assert(owner.RefreshCount == refreshes + 1 && group.ObjectIDs.Contains(member.InstanceGuid),
+                    "coalesced callback did not refresh the latest state");
+                owner.ScheduleOutputRefresh();
+                Assert(f.Document.ScheduleCount == schedules + 1, "unchanged state scheduled again after callback");
+            }
+            finally { owner.DocumentContextChanged(f.Document, GH_DocumentContext.Close); }
+        });
+        check("Status uses Active, Off and named GG feedback", () =>
+        {
+            using var f = new Fixture();
+            var group = f.Group(new Obj(0), new Obj(100)); group.NickName = "Inputs";
+            var incoming = new Obj(500); f.Document.Add(incoming); f.Start();
+            Assert(f.Manager.Status == "Active · 1 group", "active status exposes cache internals");
+            f.Document.Selection.Add(incoming); f.Canvas.GG(); f.Document.Selection.Clear();
+            f.Canvas.Down(new Point(50, 5)); f.Canvas.ClickUp(new Point(50, 5));
+            Assert(f.Manager.Status == "Last: +1 → 'Inputs'", "GG success lacks destination feedback");
+            f.Manager.Configure(null, f.Document, false, 1, false);
+            Assert(f.Manager.Status == "Off", "disabled status is not Off");
+        });
+        check("Unchanged outputs and repeated no-op drags schedule no additional solution", () =>
+        {
+            using var f = new Fixture();
+            var member = new Obj(10); f.Group(new Obj(0), new Obj(100), member);
+            var owner = new HopperGroupComponent(); f.Document.Add(owner); owner.Solve(new DataAccess());
+            try
+            {
+                var schedules = f.Document.ScheduleCount;
+                owner.ScheduleOutputRefresh(); owner.ScheduleOutputRefresh();
+                f.Drag(member, 1); f.Drag(member, 1);
+                Assert(f.Document.ScheduleCount == schedules, "unchanged outputs scheduled a redundant solution");
+                f.Drag(member, 500);
+                Assert(f.Document.ScheduleCount == schedules + 1, "changed membership failed to refresh outputs");
+            }
+            finally { owner.DocumentContextChanged(f.Document, GH_DocumentContext.Close); }
+        });
         foreach (var systemWindow in new[] { 200, 1000 })
         {
             foreach (var elapsed in new[] { 650, 651, 1000, 1001 })

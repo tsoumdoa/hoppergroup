@@ -209,11 +209,16 @@ namespace Grasshopper.Kernel
         {
             UndoUtil = new(UndoServer);
         }
-                public Exception ScheduleError;
+        public Exception ScheduleError;
+        public int ScheduleCount;
+        public bool DeferSolutions;
+        public readonly Queue<Action<GH_Document>> ScheduledSolutions = new();
         public void ScheduleSolution(int delay, Action<GH_Document> callback)
         {
             if (ScheduleError != null) throw ScheduleError;
-            callback(this);
+            ScheduleCount++;
+            if (DeferSolutions) ScheduledSolutions.Enqueue(callback);
+            else callback(this);
         }
         public bool IsModified;
         public event EventHandler<GH_DocObjectEventArgs> ObjectsAdded, ObjectsDeleted;

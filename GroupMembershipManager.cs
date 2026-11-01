@@ -55,6 +55,7 @@ namespace HopperGroup
         private float _exitScale = 1f;
 
         public string Status { get; private set; } = "Ready";
+        private string ActiveStatus => $"Active · {_groups.Count} group{(_groups.Count == 1 ? "" : "s")}";
         public int GroupCount => _groups.Count;
         public int LastChangeCount { get; private set; }
         public string DebugLog => _debugLog.Count == 0
@@ -64,7 +65,7 @@ namespace HopperGroup
             ? $"Add {_shortcutObjectIds.Count} object(s)\nClick group; Esc cancels"
             : string.Empty;
         private string PendingShortcutStatus =>
-            $"GG: click one destination group for {_shortcutObjectIds.Count} object(s); Esc cancels";
+            $"GG: click inside a destination group for {_shortcutObjectIds.Count} object(s); Esc cancels";
 
         internal GroupMembershipManager(Func<long> shortcutTimestamp = null, Func<int> doubleClickTime = null)
         {
@@ -122,7 +123,7 @@ namespace HopperGroup
                 }
                 if (!wasEnabled || documentChanged)
                 {
-                    Status = $"Enabled - cached {_groups.Count} group region(s)";
+                    Status = ActiveStatus;
                 }
             }
             else
@@ -134,7 +135,7 @@ namespace HopperGroup
                 _groups.Clear();
                 _parentByChild.Clear();
                 LastChangeCount = 0;
-                Status = "Disabled";
+                Status = "Off";
             }
             Guard("UpdateShortcutPrompt", () => _owner?.UpdateShortcutPrompt());
         }
@@ -147,7 +148,7 @@ namespace HopperGroup
             if (!_enabled || _document == null)
             {
                 LastChangeCount = 0;
-                Status = _enabled ? "No document" : "Disabled";
+                Status = _enabled ? "No document" : "Off";
                 return;
             }
 
@@ -252,7 +253,7 @@ namespace HopperGroup
             RebuildGroupCache();
             RememberSettledLayout();
             LastChangeCount = 0;
-            Status = $"Enabled - cached {_groups.Count} group region(s)";
+            Status = ActiveStatus;
             _owner?.ScheduleOutputRefresh();
         }
 
@@ -363,7 +364,7 @@ namespace HopperGroup
                 LastChangeCount = changes;
                 _document.IsModified = true;
                 Status = _shortcutObjectIds.Count > 0 ? PendingShortcutStatus
-                    : $"Enabled - cached {_groups.Count} group region(s), {changes} change(s)";
+                    : $"Last: {changes} membership updates";
                 Instances.InvalidateCanvas();
             }
             if (selectionChanged)
@@ -459,7 +460,7 @@ namespace HopperGroup
                     SyncSettledGroups();
                     Status = _shortcutObjectIds.Count > 0
                         ? PendingShortcutStatus
-                        : $"Enabled - cached {_groups.Count} group region(s)";
+                        : ActiveStatus;
                     _owner?.ScheduleOutputRefresh();
                 }
             }
@@ -767,9 +768,12 @@ namespace HopperGroup
                 // pending external moves that still need their settled boundaries.
             }
             LastChangeCount = changes;
-            Status = $"Added {changes} object(s) to group";
+            Status = changes > 0 ? $"Last: +{changes} → '{GroupLabel(target)}'" : $"Already in '{GroupLabel(target)}'";
             _owner?.ScheduleOutputRefresh();
         }
+
+        private static string GroupLabel(GH_Group group) =>
+            string.IsNullOrWhiteSpace(group.NickName) ? "Group" : group.NickName;
 
         private static bool GroupContainsDescendant(GH_Group group, Guid id,
             Dictionary<Guid, IGH_DocumentObject> objectsById)
@@ -1189,7 +1193,7 @@ namespace HopperGroup
                     _document.UndoUtil.MergeRecords(recordedGroups.Count + (mergeWithNativeDrag ? 1 : 0));
                 }
 
-                Status = $"Enabled - cached {_groups.Count} group region(s), {LastChangeCount} change(s)";
+                Status = LastChangeCount > 0 ? $"Last: {LastChangeCount} membership update{(LastChangeCount == 1 ? "" : "s")}" : ActiveStatus;
                 Log($"Processed {processedIds.Count} object(s), {LastChangeCount} membership change(s).");
             }
             finally
