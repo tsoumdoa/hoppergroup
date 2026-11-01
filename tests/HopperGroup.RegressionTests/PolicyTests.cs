@@ -46,6 +46,34 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        foreach (var scale in new[] { 0f, 0.5f, 1f, 2f })
+        {
+            foreach (var vertical in new[] { false, true })
+            {
+                check($"Large panel exit buffer is capped on {(vertical ? "Y" : "X")} before scale {scale}", () =>
+                {
+                    using var f = new Fixture();
+                    var panel = new Obj(-115, -90);
+                    panel.Attributes.Bounds = new RectangleF(-115, -90, 250, 200);
+                    var group = f.Group(new Obj(0), panel); f.Start(scale);
+                    void Move(float distance)
+                    {
+                        f.Canvas.Down();
+                        if (!vertical) panel.Move(distance);
+                        else
+                        {
+                            var bounds = panel.Attributes.Bounds; bounds.Offset(0, distance); panel.Attributes.Bounds = bounds;
+                            var pivot = panel.Attributes.Pivot; pivot.Y += distance; panel.Attributes.Pivot = pivot;
+                        }
+                        f.Canvas.Up();
+                    }
+                    Move(9 + 120 * scale);
+                    Assert(group.ObjectIDs.Contains(panel.InstanceGuid), "panel left before the scaled cap");
+                    Move(2);
+                    Assert(!group.ObjectIDs.Contains(panel.InstanceGuid), "large panel retained an uncapped exit buffer");
+                });
+            }
+        }
         foreach (var steps in new[] { 1, 3, 6 })
         {
             check($"Stationary exit reference releases the same endpoint in {steps} drag(s)", () =>

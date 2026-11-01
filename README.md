@@ -37,7 +37,7 @@ The component is available under `Params > Util > Hopper Group`.
 ### Inputs
 
 - `Enabled`: turns the automation on or off. Default: `true`. Grasshopper's own Disable command also stops the automation.
-- `Exit Scale`: multiplier for the removal buffer. At the default `1`, an object must move beyond its group's edge by 1.5 times its size or at least 40 canvas units, whichever is larger. Increase it for a less sensitive exit; set it to `0` for no buffer.
+- `Exit Scale`: multiplier for the removal buffer. On each axis the buffer is `min(max(1.5 × object size, 40), 120) × Exit Scale` canvas units. The 40–120 clamp applies before scaling. Increase it for a less sensitive exit; set it to `0` for no buffer. During a member drag, the reference outline uses the group's stationary members with the host's padding, so repeated small drags and one large drag to the same position agree. Carried groups retain their existing behaviour; if no members stay stationary, the drag-start outline is used.
 - `Refresh`: toggle to rescan all groups and repair membership for every canvas object.
 - `Debug`: writes debug messages to Rhino command history and the `Log` output.
 

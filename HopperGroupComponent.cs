@@ -35,7 +35,7 @@ namespace HopperGroup
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddBooleanParameter("Enabled", "Enabled", "Enable automatic group membership updates.", GH_ParamAccess.item, true);
-            pManager.AddNumberParameter("Exit Scale", "Exit", "Scales the exit buffer (normally 1.5 object widths or at least 40 canvas units) before an object leaves its group.", GH_ParamAccess.item, _exitScale);
+            pManager.AddNumberParameter("Exit Scale", "Exit", "Scales the exit buffer: 1.5 times object size, clamped to 40–120 canvas units before scaling. Zero means no buffer.", GH_ParamAccess.item, _exitScale);
             pManager.AddBooleanParameter("Refresh", "Refresh", "Toggle to rescan all groups and repair memberships for all objects.", GH_ParamAccess.item, false);
             pManager.AddBooleanParameter("Debug", "Debug", "Enable debug logging.", GH_ParamAccess.item, false);
         }

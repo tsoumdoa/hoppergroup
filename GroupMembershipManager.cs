@@ -17,6 +17,9 @@ namespace HopperGroup
     {
         // Grasshopper layouts can round pivots to whole canvas units independently.
         private const float TranslationTolerance = 1f;
+        private const float ExitSizeMultiplier = 1.5f;
+        private const float MinimumExitBuffer = 40f;
+        private const float MaximumExitBuffer = 120f;
         private const int GroupTapWindowMilliseconds = 650;
         internal const int DebugLogLineLimit = 200;
         private readonly Func<long> _shortcutTimestamp;
@@ -1693,10 +1696,10 @@ namespace HopperGroup
         private RectangleF GetExitBounds(RectangleF groupBounds, RectangleF dragBounds)
         {
             var exitBounds = groupBounds;
-            // Small components need a usable canvas-space buffer too. Keep Exit Scale
-            // as the user's adjustment for both the size-based and minimum distances.
-            exitBounds.Inflate(Math.Max(dragBounds.Width * 1.5f, 40f) * _exitScale,
-                Math.Max(dragBounds.Height * 1.5f, 40f) * _exitScale);
+            // Clamp before scaling so large panels remain easy to remove.
+            float Buffer(float size) => Math.Min(Math.Max(size * ExitSizeMultiplier,
+                MinimumExitBuffer), MaximumExitBuffer) * _exitScale;
+            exitBounds.Inflate(Buffer(dragBounds.Width), Buffer(dragBounds.Height));
             return exitBounds;
         }
 
