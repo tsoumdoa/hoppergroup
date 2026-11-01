@@ -7,6 +7,10 @@ namespace HopperGroup
 {
     // Weak keys are a backstop for documents that disappear without a lifecycle
     // notification. Normal remove/unload paths remove the session immediately.
+    // TODO: A live canvas still roots a manager through its event handlers if neither
+    // Close nor Unloaded fires. Simply detaching on DocumentChanged would break
+    // switching back without a component solve; a future safeguard needs a way to
+    // reattach on return without retaining the inactive document through the canvas.
     internal static class DocumentSessionRegistry
     {
         private static readonly ConditionalWeakTable<GH_Document, Session> Sessions =
