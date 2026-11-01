@@ -65,6 +65,8 @@ elif command -v yak >/dev/null 2>&1; then
   yak_bin="$(command -v yak)"
 elif [[ -x "/Applications/Rhino 8.app/Contents/Resources/bin/yak" ]]; then
   yak_bin="/Applications/Rhino 8.app/Contents/Resources/bin/yak"
+elif [[ -x "/c/Program Files/Rhino 8/System/Yak.exe" ]]; then
+  yak_bin="/c/Program Files/Rhino 8/System/Yak.exe"
 else
   fail "Yak CLI not found. Set YAK_BIN, add yak to PATH, or install Rhino 8."
 fi
@@ -83,12 +85,14 @@ fi
 
 csproj="HopperGroup.csproj"
 regression_project="tests/HopperGroup.RegressionTests/HopperGroup.RegressionTests.csproj"
+windows_input_project="tests/HopperGroup.WindowsInputTests/HopperGroup.WindowsInputTests.csproj"
 manifest="yak/manifest.yml"
 readme="README.md"
 icon="yak/icon.png"
 
 [[ -f "$csproj" ]] || fail "missing $csproj"
 [[ -f "$regression_project" ]] || fail "missing $regression_project"
+[[ -f "$windows_input_project" ]] || fail "missing $windows_input_project"
 [[ -f "$manifest" ]] || fail "missing $manifest"
 [[ -f "$readme" ]] || fail "missing $readme"
 [[ -f "$icon" ]] || fail "missing $icon"
@@ -100,6 +104,8 @@ manifest_version_count="$(grep -Ec '^version:[[:space:]]*[^[:space:]]+' "$manife
 
 log "Running Release regression tests."
 dotnet run --project "$regression_project" -c Release
+log "Running Release Windows input tests."
+dotnet run --project "$windows_input_project" -c Release
 
 backup_dir="$(mktemp -d)"
 restore_on_error=0
@@ -164,11 +170,14 @@ case "$push_target" in
   test)
     log "Pushing to Yak test server."
     "$yak_bin" push --source https://test.yak.rhino3d.com "$artifact"
+    # Publishing cannot be rolled back, even if the follow-up search fails.
+    restore_on_error=0
     "$yak_bin" search --source https://test.yak.rhino3d.com --all --prerelease hoppergroup
     ;;
   public)
     log "Pushing to public Yak server."
     "$yak_bin" push "$artifact"
+    restore_on_error=0
     ;;
 esac
 

@@ -24,7 +24,6 @@
   </PropertyGroup>
   
   <ItemGroup>
-    <None Remove="nul" />
     <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
   
@@ -47,9 +46,6 @@
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" ExcludeAssets="all" GeneratePathProperty="true" />
     <Reference Include="$(PkgMicrosoft_NETFramework_ReferenceAssemblies_net48)\build\.NETFramework\v4.8\System.Windows.Forms.dll" Private="False" />
     <PackageReference Include="System.Drawing.Common" Version="7.0.0" ExcludeAssets="runtime" />
-  </ItemGroup>
-  <ItemGroup>
-    <Folder Include="yak\" />
   </ItemGroup>
 
 </Project>
