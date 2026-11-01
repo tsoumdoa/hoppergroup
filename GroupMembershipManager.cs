@@ -1129,7 +1129,9 @@ namespace HopperGroup
                         var boundsBeforeMove = _groups.ToDictionary(group => group.Id, group => group.Bounds);
                         var destinationContext = externalSnapshot == null ? combinedContext : selectionContext;
                         var settledExitReferences = _groups.ToDictionary(group => group.Id, group => group.Bounds);
-                        var nativeExitReferences = externalSnapshot != null ? CreateExitReferences(nativeMovedIds) : null;
+                        // Pending external departures are moving members too, even if
+                        // they were already displaced when the native gesture began.
+                        var nativeExitReferences = externalSnapshot != null ? CreateExitReferences(movedIds) : null;
                         foreach (var obj in externallyMoved)
                         {
                             // External carrying protects members only until a new native drag moves

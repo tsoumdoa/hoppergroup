@@ -46,6 +46,16 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        check("A pending external departure cannot stretch a native member's exit reference", () =>
+        {
+            using var f = new Fixture();
+            var a = new Obj(0); var b = new Obj(10); var c = new Obj(20);
+            var group = f.Group(a, b, c); f.Start();
+            b.Move(1000);
+            f.Drag(a, 100);
+            Assert(group.ObjectIDs.SequenceEqual(new[] { c.InstanceGuid }) && f.Manager.LastChangeCount == 2,
+                "external member departure shielded the native member from removal");
+        });
         foreach (var locked in new[] { false, true })
         {
             check($"GG instantly adds a mixed selection to its single selected group (locked: {locked})", () =>
