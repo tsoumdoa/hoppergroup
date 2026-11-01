@@ -46,6 +46,53 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        foreach (var refresh in new[] { false, true })
+        {
+            foreach (var cyclicBranch in new[] { false, true })
+            {
+                check($"Geometric enclosure cannot bypass retention (Refresh: {refresh}, cyclic branch: {cyclicBranch})", () =>
+                {
+                    using var f = new Fixture();
+                    var moving = new Obj(50, 40); var current = f.Group(new Obj(0, 0), new Obj(200, 100), moving);
+                    var overlap = f.Group(new Obj(80, 30), new Obj(150, 70));
+                    if (cyclicBranch)
+                    {
+                        // Host outlines are independent of traversal in this malformed
+                        // graph; pin the doubles' outlines to exercise cycle handling.
+                        var a = f.Group(new Obj(180, 90)); var b = f.Group(a);
+                        a.Attributes.Compute = null; a.Attributes.Bounds = new RectangleF(180, 90, 20, 20);
+                        b.Attributes.Compute = null; b.Attributes.Bounds = new RectangleF(180, 90, 20, 20);
+                        a.AddObject(b.InstanceGuid); current.AddObject(a.InstanceGuid);
+                    }
+                    f.Start();
+                    if (refresh) { moving.Move(50); f.Manager.RefreshAllObjects(); }
+                    else f.Drag(moving, 50);
+                    Assert(current.ObjectIDs.Contains(moving.InstanceGuid) && !overlap.ObjectIDs.Contains(moving.InstanceGuid)
+                        && !current.ObjectIDs.Contains(overlap.InstanceGuid) && f.Manager.LastChangeCount == 0,
+                        "an unrelated geometrically enclosed group stole a retained member");
+                });
+            }
+        }
+        check("Retention permits entry into an explicit transitive descendant", () =>
+        {
+            using var f = new Fixture();
+            var moving = new Obj(50, 40); var inner = f.Group(new Obj(80, 30), new Obj(150, 70));
+            var middle = f.Group(inner); var parent = f.Group(new Obj(0, 0), new Obj(200, 100), middle, moving);
+            f.Start(); f.Drag(moving, 50);
+            Assert(inner.ObjectIDs.Contains(moving.InstanceGuid) && !parent.ObjectIDs.Contains(moving.InstanceGuid)
+                && parent.ObjectIDs.Contains(middle.InstanceGuid) && middle.ObjectIDs.Contains(inner.InstanceGuid),
+                "explicit transitive descent was blocked by retention");
+        });
+        check("A geometric ancestor cannot suppress a carried child's transfer", () =>
+        {
+            using var f = new Fixture();
+            var moving = new Obj(50); var child = f.Group(moving);
+            var parent = f.Group(new Obj(0), new Obj(70), child);
+            var overlap = f.Group(new Obj(-100, -100), new Obj(300, 100));
+            f.Start(); f.Document.Selection.Add(child); f.Drag(moving, 80);
+            Assert(!parent.ObjectIDs.Contains(child.InstanceGuid) && overlap.ObjectIDs.Contains(child.InstanceGuid)
+                && !overlap.ObjectIDs.Contains(parent.InstanceGuid), "geometric ancestry kept an unrelated old parent");
+        });
         foreach (var operation in new[] { "drag", "Refresh", "external carry + Refresh" })
         {
             check($"A locked child's leaves stay indirect during {operation}", () =>

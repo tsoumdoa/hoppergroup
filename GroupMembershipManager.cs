@@ -27,7 +27,6 @@ namespace HopperGroup
         private long? _firstGroupTapTimestamp;
         private bool _groupKeyDown;
         private readonly List<GroupRegion> _groups = new List<GroupRegion>();
-        private readonly Dictionary<Guid, Guid> _parentByChild = new Dictionary<Guid, Guid>();
         private readonly Dictionary<Guid, PointF> _positionsAtMouseDown = new Dictionary<Guid, PointF>();
         private readonly Dictionary<Guid, RectangleF> _groupBoundsAtMouseDown = new Dictionary<Guid, RectangleF>();
         private readonly Dictionary<Guid, RectangleF> _settledGroupBounds = new Dictionary<Guid, RectangleF>();
@@ -134,7 +133,6 @@ namespace HopperGroup
                 ClearDragState();
                 ClearSettledLayout();
                 _groups.Clear();
-                _parentByChild.Clear();
                 LastChangeCount = 0;
                 Status = "Off";
             }
@@ -172,7 +170,6 @@ namespace HopperGroup
             {
                 UnsubscribeDocument();
                 _groups.Clear();
-                _parentByChild.Clear();
                 ClearDragState();
                 ClearSettledLayout();
                 if (_owner != null)
@@ -893,7 +890,6 @@ namespace HopperGroup
             }
 
             _groups.Sort((left, right) => left.Area.CompareTo(right.Area));
-            BuildDesiredGroupHierarchy();
         }
 
         private RectangleF GetSettledGroupBounds(GH_Group group,
@@ -1125,7 +1121,6 @@ namespace HopperGroup
                                 }
                             }
                             _groups.Sort((left, right) => left.Area.CompareTo(right.Area));
-                            BuildDesiredGroupHierarchy();
                         }
                         var combinedContext = new SelectionContext(new HashSet<Guid>(_groups
                             .Where(group => selectionContext.IsCarriedGroup(group.Id)
@@ -1155,7 +1150,6 @@ namespace HopperGroup
                         RebuildGroupCache();
                         if (combinedContext.HasCarriedGroups)
                         {
-                            BuildDesiredGroupHierarchy(boundsBeforeMove, destinationContext);
                             LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups, destinationContext, boundsBeforeMove,
                                 combinedContext);
                             RebuildGroupCache();
@@ -1186,7 +1180,6 @@ namespace HopperGroup
                 if (selectionContext.HasCarriedGroups)
                 {
                     RebuildGroupCache();
-                    BuildDesiredGroupHierarchy(boundsBeforeCarriedGroupMove, selectionContext);
                     LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups, selectionContext, boundsBeforeCarriedGroupMove);
                     RebuildGroupCache();
                 }
@@ -1226,7 +1219,6 @@ namespace HopperGroup
         private void RebuildGroupCache()
         {
             _groups.Clear();
-            _parentByChild.Clear();
 
             if (_document == null)
             {
@@ -1244,7 +1236,6 @@ namespace HopperGroup
             }
 
             _groups.Sort((left, right) => left.Area.CompareTo(right.Area));
-            BuildDesiredGroupHierarchy();
             Log($"Rebuilt group cache with {_groups.Count} group(s).");
         }
 
@@ -1275,45 +1266,6 @@ namespace HopperGroup
 
             region = new GroupRegion(group, bounds);
             return true;
-        }
-
-        private void BuildDesiredGroupHierarchy(
-            Dictionary<Guid, RectangleF> boundsBeforeMove = null,
-            SelectionContext selectionContext = null)
-        {
-            _parentByChild.Clear();
-            var effectiveBounds = _groups.ToDictionary(
-                group => group.Id,
-                group => boundsBeforeMove != null
-                    && !selectionContext.IsCarriedGroup(group.Id)
-                    && boundsBeforeMove.TryGetValue(group.Id, out var previous)
-                        ? previous
-                        : group.Bounds);
-
-            foreach (var child in _groups)
-            {
-                var childBounds = effectiveBounds[child.Id];
-                var childArea = GetArea(childBounds);
-                GroupRegion parent = null;
-                var parentArea = 0f;
-                foreach (var candidate in _groups)
-                {
-                    if (candidate.Id == child.Id) continue;
-                    var bounds = effectiveBounds[candidate.Id];
-                    var area = GetArea(bounds);
-                    if (area > childArea && (parent == null || area < parentArea)
-                        && ContainsRectangle(bounds, childBounds))
-                    {
-                        parent = candidate;
-                        parentArea = area;
-                    }
-                }
-
-                if (parent != null)
-                {
-                    _parentByChild[child.Id] = parent.Id;
-                }
-            }
         }
 
         private int EnsureNestedGroupHierarchy(HashSet<Guid> recordedGroups, SelectionContext context,
@@ -1348,7 +1300,7 @@ namespace HopperGroup
                 {
                     if (IsAutoLocked(parent.Group) || childContext.IsCarriedGroup(parent.Id) || parent.Id == target?.Id
                         || (GetExitBounds(ParentBounds(parent), child.Bounds).IntersectsWith(child.Bounds)
-                            && (target == null || IsAncestor(target.Id, parent.Id))))
+                            && (target == null || GroupContainsDescendant(target.Group, parent.Id, objectsById))))
                     {
                         retained = true;
                         continue;
@@ -1628,7 +1580,10 @@ namespace HopperGroup
                         || !GroupContainsDescendant(region.Group, obj.InstanceGuid, objectsById))
                     && (!currentGroups.Contains(region) || selectionContext.IsCarriedGroup(region.Id)
                         || ExitBounds(region).Contains(center))
-                    && protectedGroups.All(current => current.Id == region.Id || IsAncestor(current.Id, region.Id)));
+                    // Geometry selects destinations; only explicit, cycle-safe
+                    // membership traversal can grant the descendant exception.
+                    && protectedGroups.All(current => current.Id == region.Id
+                        || GroupContainsDescendant(current.Group, region.Id, objectsById)));
 
             var changes = 0;
             var retainedMembership = false;
@@ -1639,7 +1594,7 @@ namespace HopperGroup
                 if (IsAutoLocked(current.Group) || selectionContext.IsCarriedGroup(current.Id)
                     || (target != null && current.Id == target.Id)
                     || (exitBounds.Contains(center)
-                        && (target == null || IsAncestor(target.Id, current.Id))))
+                        && (target == null || GroupContainsDescendant(target.Group, current.Id, objectsById))))
                 {
                     retainedMembership = true;
                     continue;
@@ -1682,29 +1637,6 @@ namespace HopperGroup
                 .Where(region => region.Bounds.Contains(point))
                 .OrderBy(region => region.Area)
                 .FirstOrDefault();
-        }
-
-        private bool IsAncestor(Guid possibleAncestor, Guid child)
-        {
-            var current = child;
-            var guard = 0;
-
-            while (_parentByChild.TryGetValue(current, out var parent))
-            {
-                if (parent == possibleAncestor)
-                {
-                    return true;
-                }
-
-                current = parent;
-                guard++;
-                if (guard > _groups.Count)
-                {
-                    return false;
-                }
-            }
-
-            return false;
         }
 
         private List<IGH_DocumentObject> GetManagedObjects(IEnumerable<IGH_DocumentObject> objects)
