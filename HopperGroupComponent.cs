@@ -12,6 +12,14 @@ namespace HopperGroup
         private bool _debug;
         private bool _lastRefresh;
         private double _exitScale = 1.0;
+        private GH_Document _sessionDocument;
+        private bool _contextUnloaded;
+        private bool _active;
+        private bool _inactive;
+        private bool _refreshingOutputs;
+
+        internal bool SessionEligible => _enabled && !Locked && !_contextUnloaded;
+        internal GroupMembershipManager Manager => _manager;
 
         public HopperGroupComponent()
             : base(
@@ -21,6 +29,7 @@ namespace HopperGroup
                 "Params",
                 "Util")
         {
+            ObjectChanged += OnComponentChanged;
         }
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
@@ -65,31 +74,104 @@ namespace HopperGroup
                 return;
             }
 
-            _manager.Configure(this, doc, _enabled, (float)_exitScale, _debug);
+            ConfigureSession(doc);
 
-            if (refresh && !_lastRefresh)
+            if (_active && refresh && !_lastRefresh)
             {
                 _manager.RefreshAllObjects();
             }
 
             _lastRefresh = refresh;
 
-            DA.SetData(0, _manager.Status);
-            DA.SetData(1, _manager.GroupCount);
-            DA.SetData(2, _manager.LastChangeCount);
+            if (_inactive)
+                AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "Inactive: another HopperGroup component controls this document");
+            DA.SetData(0, _inactive ? "Inactive (another HopperGroup is active)" : _active ? _manager.Status : "Disabled");
+            DA.SetData(1, _active ? _manager.GroupCount : 0);
+            DA.SetData(2, _active ? _manager.LastChangeCount : 0);
             DA.SetData(3, _manager.DebugLog);
         }
 
         public override void AddedToDocument(GH_Document document)
         {
             base.AddedToDocument(document);
-            _manager.Configure(this, document, _enabled, (float)_exitScale, _debug);
+            _manager.Guard("AddedToDocument", () =>
+            {
+                _contextUnloaded = false;
+                ConfigureSession(document);
+            });
         }
 
         public override void RemovedFromDocument(GH_Document document)
         {
-            _manager.Dispose();
+            _manager.Guard("RemovedFromDocument", () =>
+            {
+                if (_sessionDocument != null) DocumentSessionRegistry.Remove(this, _sessionDocument);
+                ReleaseSession();
+            });
             base.RemovedFromDocument(document);
+        }
+
+        public override void DocumentContextChanged(GH_Document document, GH_DocumentContext context)
+        {
+            base.DocumentContextChanged(document, context);
+            _manager.Guard("DocumentContextChanged", () =>
+            {
+                if (context == GH_DocumentContext.Unloaded || context == GH_DocumentContext.Close)
+                {
+                    _contextUnloaded = true;
+                    DocumentSessionRegistry.Close(document);
+                    ReleaseSession();
+                }
+                else if (context == GH_DocumentContext.Loaded)
+                {
+                    _contextUnloaded = false;
+                    ConfigureSession(document);
+                }
+            });
+        }
+
+        private void OnComponentChanged(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e) =>
+            _manager.Guard("Component.ObjectChanged", () =>
+            {
+                if (e.Type == GH_ObjectEventType.Enabled && _sessionDocument != null)
+                    ConfigureSession(_sessionDocument);
+            });
+
+        private void ConfigureSession(GH_Document document)
+        {
+            if (_contextUnloaded) return;
+            if (_sessionDocument != null && !ReferenceEquals(_sessionDocument, document))
+                DocumentSessionRegistry.Remove(this, _sessionDocument);
+            _contextUnloaded = false;
+            _sessionDocument = document;
+            DocumentSessionRegistry.Configure(this, document);
+        }
+
+        internal void ApplySession(GH_Document document, bool active, bool anotherOwner)
+        {
+            var inactive = SessionEligible && !active && anotherOwner;
+            var changed = _active != active || _inactive != inactive;
+            _active = active;
+            _inactive = inactive;
+            if (active) _manager.Configure(this, document, true, (float)_exitScale, _debug);
+            else _manager.Dispose();
+            if (changed)
+            {
+                ClearRuntimeMessages();
+                if (inactive)
+                    AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "Inactive: another HopperGroup component controls this document");
+                ScheduleOutputRefresh();
+            }
+        }
+
+        internal void ReleaseSession()
+        {
+            _sessionDocument = null;
+            _contextUnloaded = true;
+            _active = false;
+            _inactive = false;
+            _manager.Dispose();
+            ClearRuntimeMessages();
         }
 
         internal void UpdateShortcutPrompt()
@@ -102,22 +184,28 @@ namespace HopperGroup
 
         internal void ScheduleOutputRefresh()
         {
-            UpdateShortcutPrompt();
-            var document = OnPingDocument();
-            if (document == null || Locked) return;
             try
             {
+                UpdateShortcutPrompt();
+                var document = OnPingDocument();
+                if (document == null || Locked || _contextUnloaded || _refreshingOutputs) return;
                 document.ScheduleSolution(1, scheduledDocument =>
                 {
-                    if (!Locked && ReferenceEquals(scheduledDocument, OnPingDocument()))
+                    _refreshingOutputs = true;
+                    try
                     {
-                        ExpireSolution(false);
+                        _manager.Guard("Scheduled output refresh", () =>
+                        {
+                            if (!Locked && !_contextUnloaded && ReferenceEquals(scheduledDocument, OnPingDocument()))
+                                ExpireSolution(false);
+                        });
                     }
+                    finally { _refreshingOutputs = false; }
                 });
             }
-            catch
+            catch (Exception error)
             {
-                // Grasshopper may be tearing down the canvas or document.
+                _manager.ReportError("ScheduleOutputRefresh", error);
             }
         }
 
