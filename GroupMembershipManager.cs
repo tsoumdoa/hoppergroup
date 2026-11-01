@@ -391,6 +391,7 @@ namespace HopperGroup
             var changes = 0;
             foreach (var parent in objectsById.Values.OfType<GH_Group>())
             {
+                if (IsAutoLocked(parent)) continue;
                 // Use real membership links, including parents left without visible bounds.
                 // Geometric containment cannot identify the original parent after deletion.
                 var removedChildren = parent.ObjectIDs.Where(deletedById.ContainsKey).ToList();
@@ -853,6 +854,7 @@ namespace HopperGroup
             var changedGroups = new HashSet<Guid>();
             foreach (var group in objectsById.Values.OfType<GH_Group>())
             {
+                if (IsAutoLocked(group)) continue;
                 var bounds = GetSettledGroupBounds(group, objectsById, boundsById, changedGroups,
                     new HashSet<Guid>(), externalContext);
                 if (bounds.Width > 0f && bounds.Height > 0f)
@@ -1200,7 +1202,7 @@ namespace HopperGroup
 
             foreach (var group in BuildObjectIndex(_document.Objects).Values.OfType<GH_Group>())
             {
-                if (TryCreateRegion(group, out var region))
+                if (!IsAutoLocked(group) && TryCreateRegion(group, out var region))
                 {
                     _groups.Add(region);
                 }
@@ -1210,6 +1212,9 @@ namespace HopperGroup
             BuildDesiredGroupHierarchy();
             Log($"Rebuilt group cache with {_groups.Count} group(s).");
         }
+
+        private static bool IsAutoLocked(GH_Group group) =>
+            group.NickName?.IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) >= 0;
 
         private bool TryCreateRegion(GH_Group group, out GroupRegion region)
         {

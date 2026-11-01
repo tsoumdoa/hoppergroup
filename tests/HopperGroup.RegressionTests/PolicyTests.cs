@@ -46,6 +46,72 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        foreach (var refresh in new[] { false, true })
+        {
+            check($"[LoCk] preserves members and skips auto targets during {(refresh ? "Refresh" : "drag")}", () =>
+            {
+                using var f = new Fixture();
+                var member = new Obj(50); var locked = f.Group(new Obj(0), new Obj(100), member);
+                locked.NickName = "Inputs [LoCk]";
+                var outer = f.Group(new Obj(-100, -100), new Obj(200, 100), locked);
+                var incoming = new Obj(45); f.Document.Add(incoming); f.Start();
+                if (refresh) { member.Move(500); incoming.Move(5); f.Manager.RefreshAllObjects(); }
+                else { f.Canvas.Down(); member.Move(500); incoming.Move(5); f.Canvas.Up(); }
+                Assert(locked.ObjectIDs.Contains(member.InstanceGuid) && !locked.ObjectIDs.Contains(incoming.InstanceGuid),
+                    "automation edited a locked group's members");
+                Assert(outer.ObjectIDs.Contains(incoming.InstanceGuid), "locked target did not fall through to eligible outer group");
+            });
+        }
+        check("New placement skips a locked group when no eligible group contains it", () =>
+        {
+            using var f = new Fixture();
+            var locked = f.Group(new Obj(0), new Obj(100)); locked.NickName = "[lock]"; f.Start();
+            var incoming = new Obj(50); f.Document.Add(incoming); f.Document.Selection.Add(incoming);
+            f.Canvas.Down(); f.Canvas.ClickUp();
+            Assert(!locked.ObjectIDs.Contains(incoming.InstanceGuid) && f.Manager.LastChangeCount == 0,
+                "placement joined a locked target");
+        });
+        check("Carrying a nested child out of a locked parent preserves the parent's membership", () =>
+        {
+            using var f = new Fixture();
+            var member = new Obj(10); var child = f.Group(member);
+            var locked = f.Group(new Obj(0), new Obj(100), child); locked.NickName = "[lock]";
+            f.Start(); f.Document.Selection.Add(child); f.Drag(member, 500);
+            Assert(locked.ObjectIDs.Contains(child.InstanceGuid) && child.ObjectIDs.Contains(member.InstanceGuid),
+                "nested handling removed a locked membership");
+        });
+        check("Carrying a child into a locked outline does not nest it", () =>
+        {
+            using var f = new Fixture();
+            var member = new Obj(500); var child = f.Group(member);
+            var locked = f.Group(new Obj(0, -50), new Obj(100, 50)); locked.NickName = "[lock]";
+            f.Start(); f.Document.Selection.Add(child); f.Drag(member, -450);
+            Assert(!locked.ObjectIDs.Contains(child.InstanceGuid), "nested handling added to a locked group");
+        });
+        check("Deleting a nested group does not promote its contents into a locked parent", () =>
+        {
+            using var f = new Fixture();
+            var member = new Obj(10); var child = f.Group(member); var locked = f.Group(child, new Obj(100));
+            locked.NickName = "[lock]"; f.Start(); var before = locked.ObjectIDs.ToArray();
+            f.Document.Delete(child);
+            Assert(locked.ObjectIDs.SequenceEqual(before), "deletion promotion edited a locked parent");
+        });
+        check("Explicit GG may add to a locked group", () =>
+        {
+            using var f = new Fixture();
+            var locked = f.Group(new Obj(0), new Obj(100)); locked.NickName = "[lock]";
+            var incoming = new Obj(500); f.Document.Add(incoming); f.Start();
+            f.Document.Selection.Add(incoming); f.Canvas.GG();
+            f.Document.Selection.Clear(); f.Document.Selection.Add(locked); f.Canvas.GG();
+            Assert(locked.ObjectIDs.Contains(incoming.InstanceGuid), "explicit GG rejected a locked group");
+        });
+        check("Renaming an existing group to [lock] takes effect on the next drag and Refresh", () =>
+        {
+            using var f = new Fixture();
+            var member = new Obj(10); var group = f.Group(new Obj(0), member); f.Start();
+            group.NickName = "[LOCK]"; f.Drag(member, 500); f.Manager.RefreshAllObjects();
+            Assert(group.ObjectIDs.Contains(member.InstanceGuid), "renamed group was still managed");
+        });
         check("An overlapping unrelated smaller group cannot steal a retained member", () =>
         {
             using var f = new Fixture();

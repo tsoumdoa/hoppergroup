@@ -14,6 +14,7 @@ aectooling by tomoS
 - Adds a dragged group to another group when its whole bounding box fits inside the destination.
 - With objects selected and the canvas focused, tap `G` twice within 650 ms, then click one destination group to add them in one step. Press `Esc` to cancel.
 - Provides manual refresh and optional debug logging.
+- Groups with `[lock]` anywhere in their nickname (case-insensitive) opt out: drag, placement, nested-group handling, deletion promotion, and Refresh never edit their membership. They are skipped as automatic destinations, so the next eligible containing group is used, or none. Explicit GG additions can still target them.
 - Marks cached group regions dirty when groups are created or deleted.
 
 ## Compatibility

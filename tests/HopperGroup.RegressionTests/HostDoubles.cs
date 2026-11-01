@@ -143,7 +143,7 @@ namespace Grasshopper.Kernel
             get;
         } = new Attributes();
         public string Name => "object";
-        public string NickName => Name;
+        public string NickName { get; set; } = "object";
         public Obj(float x = 0, float y = 0)
         {
             Attributes.Pivot = new PointF(x, y);
