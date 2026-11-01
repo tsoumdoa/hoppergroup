@@ -46,6 +46,36 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        check("An overlapping unrelated smaller group cannot steal a retained member", () =>
+        {
+            using var f = new Fixture();
+            var moving = new Obj(80); var current = f.Group(new Obj(0, 100), new Obj(90), moving);
+            var overlap = f.Group(new Obj(75), new Obj(170)); f.Start();
+            f.Drag(moving, 5);
+            Assert(current.ObjectIDs.Contains(moving.InstanceGuid) && !overlap.ObjectIDs.Contains(moving.InstanceGuid),
+                "smallest overlapping box stole a retained member");
+            f.Drag(moving, 70);
+            Assert(!current.ObjectIDs.Contains(moving.InstanceGuid) && overlap.ObjectIDs.Contains(moving.InstanceGuid),
+                "normal innermost targeting did not resume after exit");
+        });
+        check("A retained member can intentionally enter its nested child", () =>
+        {
+            using var f = new Fixture();
+            var moving = new Obj(20); var child = f.Group(new Obj(75), new Obj(90));
+            var parent = f.Group(new Obj(0, 100), new Obj(150), child, moving); f.Start();
+            f.Drag(moving, 60);
+            Assert(child.ObjectIDs.Contains(moving.InstanceGuid) && !parent.ObjectIDs.Contains(moving.InstanceGuid)
+                && parent.ObjectIDs.Contains(child.InstanceGuid), "retention blocked a nested destination");
+        });
+        check("An ungrouped object still chooses the innermost overlapping group", () =>
+        {
+            using var f = new Fixture();
+            var outer = f.Group(new Obj(0, 100), new Obj(90));
+            var inner = f.Group(new Obj(75), new Obj(170));
+            var moving = new Obj(80); f.Document.Add(moving); f.Start(); f.Drag(moving, 5);
+            Assert(inner.ObjectIDs.Contains(moving.InstanceGuid) && !outer.ObjectIDs.Contains(moving.InstanceGuid),
+                "ungrouped object lost innermost targeting");
+        });
         foreach (var scale in new[] { 0f, 0.5f, 1f, 2f })
         {
             foreach (var vertical in new[] { false, true })

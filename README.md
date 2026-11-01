@@ -8,6 +8,7 @@ aectooling by tomoS
 
 - Adds moved or newly placed objects to the innermost Grasshopper group whose visual boundary contains the object center.
 - Removes objects from a group only after the object center leaves that group beyond the configured exit buffer.
+- Retains the current group inside its exit zone, even over smaller overlapping groups. Entering a nested child of the current group still transfers membership; after exit, the innermost eligible group wins.
 - Keeps a carried group's members together and preserves nested groups while their individual members change.
 - Keeps surviving contents in the parent group when a nested group is deleted or ungrouped.
 - Adds a dragged group to another group when its whole bounding box fits inside the destination.

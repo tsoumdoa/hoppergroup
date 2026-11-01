@@ -1581,9 +1581,12 @@ namespace HopperGroup
                 .ToList();
             RectangleF ExitBounds(GroupRegion region) => GetExitBounds(
                 exitReferences[region.Id], obj.Attributes.Bounds);
+            var protectedGroups = currentGroups.Where(region => !selectionContext.IsCarriedGroup(region.Id)
+                && ExitBounds(region).Contains(center)).ToList();
             var target = FindInnermostContainingGroup(center, destinationContext ?? selectionContext,
-                region => !currentGroups.Contains(region) || selectionContext.IsCarriedGroup(region.Id)
-                    || ExitBounds(region).Contains(center));
+                region => (!currentGroups.Contains(region) || selectionContext.IsCarriedGroup(region.Id)
+                        || ExitBounds(region).Contains(center))
+                    && protectedGroups.All(current => current.Id == region.Id || IsAncestor(current.Id, region.Id)));
 
             var changes = 0;
             var retainedMembership = false;
