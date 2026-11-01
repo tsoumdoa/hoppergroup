@@ -1581,7 +1581,7 @@ class Program
         });
         foreach (var reconcileOnDrop in new[] { false, true })
         {
-            Check(reconcileOnDrop ? "GG preserves pending moves while a native drag checks the stationary outline"
+            Check(reconcileOnDrop ? "GG preserves pending moves and a new member's original exit area during native drag"
                 : "GG preserves unrelated pending external moves", () =>
             {
                 var (d, c, m, g, a, b, o) = Setup();
@@ -1593,7 +1593,7 @@ class Program
                     "GG did not add the captured object");
                 if (reconcileOnDrop) { d.Selection.Clear(); d.Selection.Add(o); c.Down(); o.Move(5); c.Up(); }
                 else m.RefreshAllObjects();
-                Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && target.ObjectIDs.Contains(o.InstanceGuid) == !reconcileOnDrop,
+                Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && target.ObjectIDs.Contains(o.InstanceGuid),
                     "GG lost pending movement or reconciliation undid the addition");
             });
         }

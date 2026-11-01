@@ -31,6 +31,7 @@ namespace HopperGroup
         private readonly Dictionary<Guid, PointF> _positionsAtMouseDown = new Dictionary<Guid, PointF>();
         private readonly Dictionary<Guid, RectangleF> _groupBoundsAtMouseDown = new Dictionary<Guid, RectangleF>();
         private readonly Dictionary<Guid, RectangleF> _settledGroupBounds = new Dictionary<Guid, RectangleF>();
+        private readonly Dictionary<Guid, RectangleF> _exitBaselineBounds = new Dictionary<Guid, RectangleF>();
         private readonly Dictionary<Guid, HashSet<Guid>> _settledGroupMembers = new Dictionary<Guid, HashSet<Guid>>();
         private readonly Dictionary<Guid, PointF> _settledObjectPositions = new Dictionary<Guid, PointF>();
         private readonly HashSet<Guid> _newObjectIdsSinceSettled = new HashSet<Guid>();
@@ -355,6 +356,7 @@ namespace HopperGroup
                 _newObjectIdsSinceSettled.Remove(obj.InstanceGuid);
                 selectionChanged |= _shortcutObjectIds.Remove(obj.InstanceGuid);
                 _settledGroupBounds.Remove(obj.InstanceGuid);
+                _exitBaselineBounds.Remove(obj.InstanceGuid);
                 _settledGroupMembers.Remove(obj.InstanceGuid);
             }
 
@@ -821,6 +823,7 @@ namespace HopperGroup
 
         private void ClearSettledLayout()
         {
+            _exitBaselineBounds.Clear();
             _settledGroupBounds.Clear();
             _settledGroupMembers.Clear();
             _settledObjectPositions.Clear();
@@ -828,8 +831,9 @@ namespace HopperGroup
             _hasSettledLayout = false;
         }
 
-        private void RememberSettledLayout()
+        private void RememberSettledLayout(bool preserveExitBaselines = false, SelectionContext carried = null)
         {
+            UpdateExitBaselines(!preserveExitBaselines, carried);
             _settledGroupBounds.Clear();
             _settledGroupMembers.Clear();
             foreach (var group in _groups)
@@ -1090,6 +1094,8 @@ namespace HopperGroup
                 var recordedGroups = new HashSet<Guid>();
                 var processedIds = new HashSet<Guid>(objects.Select(obj => obj.InstanceGuid));
                 selectionContext = selectionContext ?? SelectionContext.Empty;
+                var carriedIds = new HashSet<Guid>(_groups.Where(group => selectionContext.IsCarriedGroup(group.Id))
+                    .Select(group => group.Id));
 
                 if (reconcileExternalMoves && _hasSettledLayout)
                 {
@@ -1126,12 +1132,15 @@ namespace HopperGroup
                             .Where(group => selectionContext.IsCarriedGroup(group.Id)
                                 || externalContext.IsCarriedGroup(group.Id))
                             .Select(group => group.Id)));
+                        carriedIds.UnionWith(_groups.Where(group => combinedContext.IsCarriedGroup(group.Id))
+                            .Select(group => group.Id));
                         var boundsBeforeMove = _groups.ToDictionary(group => group.Id, group => group.Bounds);
                         var destinationContext = externalSnapshot == null ? combinedContext : selectionContext;
-                        var settledExitReferences = _groups.ToDictionary(group => group.Id, group => group.Bounds);
-                        // Pending external departures are moving members too, even if
-                        // they were already displaced when the native gesture began.
-                        var nativeExitReferences = externalSnapshot != null ? CreateExitReferences(movedIds) : null;
+                        // A coherent external carry before mouse-down establishes a new
+                        // baseline for the following native drag. Pending individual
+                        // departures keep their old reference, never their live extents.
+                        UpdateExitBaselines(false, externalSnapshot != null ? externalContext : null);
+                        var settledExitReferences = CreateExitReferences();
                         foreach (var obj in externallyMoved)
                         {
                             // External carrying protects members only until a new native drag moves
@@ -1140,9 +1149,8 @@ namespace HopperGroup
                             var memberContext = externalSnapshot != null && nativeMovedIds.Contains(obj.InstanceGuid)
                                 ? selectionContext
                                 : combinedContext;
-                            var exitReferences = nativeExitReferences != null && nativeMovedIds.Contains(obj.InstanceGuid)
-                                ? nativeExitReferences : settledExitReferences;
-                            LastChangeCount += UpdateObjectMembership(obj, recordedGroups, memberContext, exitReferences, destinationContext);
+                            LastChangeCount += UpdateObjectMembership(obj, recordedGroups, memberContext,
+                                settledExitReferences, destinationContext);
                         }
 
                         RebuildGroupCache();
@@ -1170,9 +1178,7 @@ namespace HopperGroup
                     ? _groups.ToDictionary(group => group.Id, group => group.Bounds)
                     : null;
 
-                var gestureExitReferences = expireOwner
-                    ? CreateExitReferences(new HashSet<Guid>(objects.Select(obj => obj.InstanceGuid)))
-                    : _groups.ToDictionary(group => group.Id, group => group.Bounds);
+                var gestureExitReferences = CreateExitReferences();
                 foreach (var obj in objects)
                 {
                     LastChangeCount += UpdateObjectMembership(obj, recordedGroups, selectionContext, gestureExitReferences);
@@ -1190,7 +1196,7 @@ namespace HopperGroup
                     RebuildGroupCache();
                 }
 
-                RememberSettledLayout();
+                RememberSettledLayout(preserveExitBaselines: expireOwner, carried: new SelectionContext(carriedIds));
 
                 if (LastChangeCount > 0)
                 {
@@ -1563,40 +1569,35 @@ namespace HopperGroup
             }
         }
 
-        // Infer each side's host padding from the live outline, then apply it to
-        // stationary contents only. Recurse through nested groups so a moving leaf
-        // cannot stretch an ancestor's reference through its child outline.
-        private Dictionary<Guid, RectangleF> CreateExitReferences(HashSet<Guid> movingIds)
+        // Keep the last established outline, including the moving member's original
+        // area. Partial drags never grow it: repeated nudges and one long drag share
+        // an exit boundary, and distant members can move inward or sideways safely.
+        // Carry, membership edits (also in descendants), Refresh, load and undo/redo
+        // establish a new outline. This deliberately preserves empty space after an
+        // inward drag until one of those events; layout-only resizing also waits for
+        // Refresh. State belongs to this manager and is cleared on document changes.
+        private void UpdateExitBaselines(bool reset, SelectionContext carried = null)
         {
+            var currentIds = new HashSet<Guid>(_groups.Select(group => group.Id));
+            foreach (var id in _exitBaselineBounds.Keys.Where(id => !currentIds.Contains(id)).ToList())
+                _exitBaselineBounds.Remove(id);
+
+            var changedIds = _groups.Where(group => !_settledGroupMembers.TryGetValue(group.Id, out var members)
+                || !members.SetEquals(group.Group.ObjectIDs)).Select(group => group.Id).ToList();
             var objectsById = BuildObjectIndex(_document.Objects);
-            var references = new Dictionary<Guid, RectangleF>();
-            RectangleF? StationaryBounds(GH_Group group, HashSet<Guid> visiting)
-            {
-                if (!visiting.Add(group.InstanceGuid)) return null;
-                RectangleF? contents = null, stationary = null;
-                foreach (var id in group.ObjectIDs)
-                {
-                    if (!objectsById.TryGetValue(id, out var member) || member.Attributes == null) continue;
-                    var bounds = member is GH_Group child ? GetCurrentGroupBounds(child) : member.Attributes.Bounds;
-                    if (bounds.Width <= 0 || bounds.Height <= 0) continue;
-                    contents = contents.HasValue ? RectangleF.Union(contents.Value, bounds) : bounds;
-                    var remaining = member is GH_Group nested ? StationaryBounds(nested, visiting)
-                        : movingIds.Contains(id) ? (RectangleF?)null : bounds;
-                    if (remaining.HasValue)
-                        stationary = stationary.HasValue ? RectangleF.Union(stationary.Value, remaining.Value) : remaining;
-                }
-                visiting.Remove(group.InstanceGuid);
-                if (!contents.HasValue || !stationary.HasValue) return null;
-                var outline = GetCurrentGroupBounds(group);
-                var all = contents.Value;
-                var kept = stationary.Value;
-                return RectangleF.FromLTRB(outline.Left + kept.Left - all.Left,
-                    outline.Top + kept.Top - all.Top, outline.Right + kept.Right - all.Right,
-                    outline.Bottom + kept.Bottom - all.Bottom);
-            }
             foreach (var group in _groups)
-                references[group.Id] = StationaryBounds(group.Group, new HashSet<Guid>()) ?? group.Bounds;
-            return references;
+            {
+                if (reset || !_exitBaselineBounds.ContainsKey(group.Id)
+                    || (carried != null && carried.IsCarriedGroup(group.Id))
+                    || changedIds.Any(id => id == group.Id || GroupContainsDescendant(group.Group, id, objectsById)))
+                    _exitBaselineBounds[group.Id] = group.Bounds;
+            }
+        }
+
+        private Dictionary<Guid, RectangleF> CreateExitReferences()
+        {
+            UpdateExitBaselines(false);
+            return new Dictionary<Guid, RectangleF>(_exitBaselineBounds);
         }
 
         private int UpdateObjectMembership(IGH_DocumentObject obj, HashSet<Guid> recordedGroups,

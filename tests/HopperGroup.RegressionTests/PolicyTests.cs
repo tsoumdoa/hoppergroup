@@ -46,6 +46,91 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        foreach (var rightMember in new[] { false, true })
+        {
+            foreach (var delta in new[] { new PointF(1, 0), new PointF(-1, 0), new PointF(0, 1),
+                new PointF(0, -30), new PointF(0, 30) })
+            {
+                check($"Widely spaced member keeps its original exit area (right: {rightMember}, delta: {delta})", () =>
+                {
+                    using var f = new Fixture();
+                    var a = new Obj(0); var b = new Obj(1000); var group = f.Group(a, b); f.Start();
+                    var moving = rightMember ? b : a;
+                    f.Document.Selection.Add(moving);
+                    f.Canvas.Down(); moving.Move(delta.X);
+                    var bounds = moving.Attributes.Bounds; bounds.Offset(0, delta.Y); moving.Attributes.Bounds = bounds;
+                    var pivot = moving.Attributes.Pivot; pivot.Y += delta.Y; moving.Attributes.Pivot = pivot;
+                    f.Canvas.Up();
+                    Assert(group.ObjectIDs.Count == 2 && f.Manager.LastChangeCount == 0,
+                        "a small inward, outward or sideways drag removed a distant member");
+                });
+            }
+        }
+        check("Repeated inward drags of a distant member stay grouped", () =>
+        {
+            using var f = new Fixture();
+            var moving = new Obj(1000); var group = f.Group(new Obj(0), moving); f.Start();
+            for (var i = 0; i < 8; i++) f.Drag(moving, -10);
+            Assert(group.ObjectIDs.Contains(moving.InstanceGuid), "inward movement left the original group area");
+        });
+        check("A carried nested subtree rebases distant members' exit areas", () =>
+        {
+            using var f = new Fixture();
+            var a = new Obj(0); var b = new Obj(1000); var child = f.Group(a, b);
+            var c = new Obj(1100); var parent = f.Group(child, c); f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { parent, a, b, c });
+            f.Canvas.Down(); a.Move(500); b.Move(500); c.Move(500); f.Canvas.Up();
+            f.Document.Selection.Clear(); f.Drag(b, -1);
+            Assert(child.ObjectIDs.Count == 2 && parent.ObjectIDs.SequenceEqual(new[] { child.InstanceGuid, c.InstanceGuid })
+                && f.Manager.LastChangeCount == 0, "carry failed to rebase the original member area");
+        });
+        foreach (var operation in new[] { GH_UndoOperation.Undo, GH_UndoOperation.Redo })
+        {
+            check($"{operation} establishes a restored exit baseline", () =>
+            {
+                using var f = new Fixture();
+                var a = new Obj(0); var b = new Obj(10); var group = f.Group(a, b); f.Start();
+                f.Drag(b, 20);
+                // Model the authoritative layout restored by the host's undo record.
+                a.Move(1000); b.Move(1000); f.Document.RaiseUndoStateChanged(operation);
+                f.Drag(b, 1);
+                Assert(group.ObjectIDs.Count == 2, "restored layout kept an obsolete exit baseline");
+                f.Drag(b, 60);
+                Assert(!group.ObjectIDs.Contains(b.InstanceGuid), "restored baseline expanded on a partial drag");
+            });
+        }
+        check("Refresh establishes a new baseline after reconciling partial movement", () =>
+        {
+            using var f = new Fixture();
+            var moving = new Obj(10); var group = f.Group(new Obj(0), moving); f.Start();
+            f.Drag(moving, 20); f.Manager.RefreshAllObjects(); f.Drag(moving, 40);
+            Assert(group.ObjectIDs.Contains(moving.InstanceGuid), "Refresh failed to establish the current outline");
+            f.Drag(moving, 20);
+            Assert(!group.ObjectIDs.Contains(moving.InstanceGuid), "post-Refresh partial drags expanded the outline");
+        });
+        check("Membership edits in a child establish its ancestor's exit baseline", () =>
+        {
+            using var f = new Fixture();
+            var moving = new Obj(10); var child = f.Group(new Obj(0, 100));
+            var parent = f.Group(child, moving); var distant = new Obj(1000, 100); f.Document.Add(distant); f.Start();
+            child.AddObject(distant.InstanceGuid);
+            f.Drag(moving, 500);
+            Assert(parent.ObjectIDs.Contains(moving.InstanceGuid), "ancestor ignored an edited descendant's extents");
+        });
+        check("Changing documents rebuilds exit baselines even for reused group IDs", () =>
+        {
+            using var f = new Fixture();
+            var original = f.Group(new Obj(0), new Obj(10)); f.Start();
+            var next = new GH_Document(); var a = new Obj(1000); var b = new Obj(1010);
+            next.Add(a); next.Add(b);
+            var group = new GH_Group(next) { InstanceGuid = original.InstanceGuid };
+            group.AddObject(a.InstanceGuid); group.AddObject(b.InstanceGuid); next.Add(group);
+            f.Canvas.ChangeDocument(next); f.Manager.Configure(null, next, true, 1, false);
+            f.Drag(b, 1);
+            Assert(group.ObjectIDs.Count == 2, "the previous document's baseline leaked into the new document");
+            f.Drag(b, 60);
+            Assert(!group.ObjectIDs.Contains(b.InstanceGuid), "new document did not get a durable baseline");
+        });
         check("A pending external departure cannot stretch a native member's exit reference", () =>
         {
             using var f = new Fixture();
@@ -317,7 +402,9 @@ internal static class PolicyTests
                         }
                         f.Canvas.Up();
                     }
-                    Move(9 + 120 * scale);
+                    // The baseline includes the panel's own original extent and
+                    // the host's 10-unit outline padding on each side.
+                    Move((vertical ? 109 : 134) + 120 * scale);
                     Assert(group.ObjectIDs.Contains(panel.InstanceGuid), "panel left before the scaled cap");
                     Move(2);
                     Assert(!group.ObjectIDs.Contains(panel.InstanceGuid), "large panel retained an uncapped exit buffer");
