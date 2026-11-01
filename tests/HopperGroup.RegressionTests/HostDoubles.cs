@@ -110,6 +110,16 @@ namespace Grasshopper.GUI.Canvas
 }
 namespace Grasshopper.Kernel
 {
+    public abstract class GH_AssemblyInfo
+    {
+        public virtual string Name => "";
+        public virtual Bitmap Icon => null;
+        public virtual Guid Id => Guid.Empty;
+        public virtual string Description => "";
+        public virtual string AuthorName => "";
+        public virtual string AuthorContact => "";
+        public virtual string AssemblyVersion => "";
+    }
     public class Attributes
     {
         private RectangleF bounds;

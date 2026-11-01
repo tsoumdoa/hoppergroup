@@ -77,6 +77,21 @@ internal static class Program
 
     private static void RunTests(Form form)
     {
+        Check(form, "Plugin metadata returns the embedded 24x24 bitmap with independent lifetime", f =>
+        {
+            var info = new HopperGroupInfo();
+            Assert(typeof(HopperGroupInfo).Assembly.GetManifestResourceInfo("HopperGroup.icon.png") != null,
+                "plugin icon resource name is incorrect");
+            using var icon = info.Icon;
+            Assert(icon != null && icon.Width == 24 && icon.Height == 24, "assembly icon is missing or not 24x24");
+            using var copy = new Bitmap(icon);
+            Assert(copy.GetPixel(12, 12) == icon.GetPixel(12, 12), "bitmap cannot be used after its source stream closes");
+        });
+        Check(form, "Plugin metadata has a stable nonempty assembly GUID", f =>
+        {
+            Assert(new HopperGroupInfo().Id != Guid.Empty && new HopperGroupInfo().Id == new HopperGroupInfo().Id,
+                "assembly identity is missing or changes per instance");
+        });
         foreach (var overComponent in new[] { false, true })
         {
             Check(form, $"Native GG resolves a locked inner destination over {(overComponent ? "a component" : "empty space")}", f =>

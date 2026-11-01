@@ -6,6 +6,8 @@
     <DefineConstants>$(DefineConstants);REAL_WINFORMS</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../HopperGroupInfo.cs" Link="HopperGroupInfo.cs" />
+    <EmbeddedResource Include="../../icon.png" LogicalName="HopperGroup.icon.png" />
     <Compile Include="../../CanvasShortcutHook.cs" Link="CanvasShortcutHook.cs" />
     <Compile Include="../../GroupMembershipManager.cs" Link="GroupMembershipManager.cs" />
     <Compile Include="../../HopperGroupComponent.cs" Link="HopperGroupComponent.cs" />
