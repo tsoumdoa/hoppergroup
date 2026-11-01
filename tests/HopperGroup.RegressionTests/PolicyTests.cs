@@ -19,11 +19,11 @@ internal static class PolicyTests
         internal readonly GH_Document Document = new();
         internal readonly GH_Canvas Canvas;
         internal readonly GroupMembershipManager Manager;
-        internal Fixture()
+        internal Fixture(Func<long> timestamp = null)
         {
             Canvas = new GH_Canvas { Document = Document };
             Instances.ActiveCanvas = Canvas;
-            Manager = new GroupMembershipManager();
+            Manager = new GroupMembershipManager(timestamp);
         }
         internal GH_Group Group(params IGH_DocumentObject[] members)
         {
@@ -46,6 +46,52 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        foreach (var systemWindow in new[] { 200, 1000 })
+        {
+            foreach (var elapsed in new[] { 650, 651, 1000, 1001 })
+            {
+                check($"GG honours system double-click time {systemWindow} at {elapsed}ms", () =>
+                {
+                    var previous = System.Windows.Forms.SystemInformation.DoubleClickTime;
+                    try
+                    {
+                        System.Windows.Forms.SystemInformation.DoubleClickTime = systemWindow;
+                        long now = 0; using var f = new Fixture(() => now);
+                        var selected = new Obj(); f.Document.Add(selected); f.Document.Selection.Add(selected); f.Start();
+                        f.Canvas.TapG(); now = System.Diagnostics.Stopwatch.Frequency * elapsed / 1000; f.Canvas.TapG();
+                        Assert((f.Manager.ShortcutPrompt.Length > 0) == (elapsed <= Math.Max(650, systemWindow)),
+                            "GG used the wrong tap window");
+                    }
+                    finally { System.Windows.Forms.SystemInformation.DoubleClickTime = previous; }
+                });
+            }
+        }
+        foreach (var clickObject in new[] { false, true })
+        {
+            check($"GG click resolves the innermost group over {(clickObject ? "a component" : "empty space")} at zoom", () =>
+            {
+                using var f = new Fixture();
+                var member = new Obj(50); var child = f.Group(member, new Obj(80));
+                var parent = f.Group(child, new Obj(-50, -50), new Obj(150, 50));
+                var incoming = new Obj(500); f.Document.Add(incoming); f.Start();
+                f.Document.Selection.Add(incoming); f.Canvas.GG();
+                f.Document.Selection.Clear(); if (clickObject) f.Document.Selection.Add(member);
+                f.Canvas.Viewport.Zoom = 2; f.Canvas.Viewport.Offset = new PointF(100, 200);
+                var point = clickObject ? new Point(210, 210) : new Point(230, 210);
+                f.Canvas.Down(point); f.Canvas.ClickUp(point);
+                Assert(child.ObjectIDs.Contains(incoming.InstanceGuid) && !parent.ObjectIDs.Contains(incoming.InstanceGuid)
+                    && f.Manager.ShortcutPrompt == "", "GG required group selection or ignored canvas coordinates");
+            });
+        }
+        check("GG destination click can explicitly target a locked group", () =>
+        {
+            using var f = new Fixture();
+            var locked = f.Group(new Obj(0), new Obj(100)); locked.NickName = "[lock]";
+            var incoming = new Obj(500); f.Document.Add(incoming); f.Start();
+            f.Document.Selection.Add(incoming); f.Canvas.GG(); f.Document.Selection.Clear();
+            f.Canvas.Down(new Point(50, 5)); f.Canvas.ClickUp(new Point(50, 5));
+            Assert(locked.ObjectIDs.Contains(incoming.InstanceGuid), "GG click skipped its explicit locked destination");
+        });
         foreach (var refresh in new[] { false, true })
         {
             check($"[LoCk] preserves members and skips auto targets during {(refresh ? "Refresh" : "drag")}", () =>

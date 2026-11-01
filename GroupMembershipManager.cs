@@ -20,9 +20,10 @@ namespace HopperGroup
         private const float ExitSizeMultiplier = 1.5f;
         private const float MinimumExitBuffer = 40f;
         private const float MaximumExitBuffer = 120f;
-        private const int GroupTapWindowMilliseconds = 650;
+        private const int MinimumGroupTapWindowMilliseconds = 650;
         internal const int DebugLogLineLimit = 200;
         private readonly Func<long> _shortcutTimestamp;
+        private readonly Func<int> _doubleClickTime;
         private long? _firstGroupTapTimestamp;
         private bool _groupKeyDown;
         private readonly List<GroupRegion> _groups = new List<GroupRegion>();
@@ -65,9 +66,10 @@ namespace HopperGroup
         private string PendingShortcutStatus =>
             $"GG: click one destination group for {_shortcutObjectIds.Count} object(s); Esc cancels";
 
-        internal GroupMembershipManager(Func<long> shortcutTimestamp = null)
+        internal GroupMembershipManager(Func<long> shortcutTimestamp = null, Func<int> doubleClickTime = null)
         {
             _shortcutTimestamp = shortcutTimestamp ?? Stopwatch.GetTimestamp;
+            _doubleClickTime = doubleClickTime ?? (() => SystemInformation.DoubleClickTime);
         }
 
         public void Configure(HopperGroupComponent owner, GH_Document document, bool enabled, float exitScale, bool debug) =>
@@ -507,19 +509,27 @@ namespace HopperGroup
 
             if (_shortcutObjectIds.Count > 0)
             {
-                var targets = _document.SelectedObjects().OfType<GH_Group>().ToList();
-                if (targets.Count == 1 && !_shortcutObjectIds.Contains(targets[0].InstanceGuid)
-                    && _hasMouseDownSnapshot
+                var point = _canvas.Viewport.UnprojectPoint(e.Location);
+                // Explicit clicks include [lock] groups, independent of what GH
+                // selected (a component, the outline, or nothing at all).
+                var target = BuildObjectIndex(_document.Objects).Values.OfType<GH_Group>()
+                    .Where(group => !_shortcutObjectIds.Contains(group.InstanceGuid))
+                    .Select(group => TryCreateRegion(group, out var region) ? region : null)
+                    .Where(region => region != null && region.Bounds.Contains(point))
+                    .OrderBy(region => region.Area).FirstOrDefault();
+                if (target != null && _hasMouseDownSnapshot
                     && Math.Abs(e.Location.X - _mouseDownLocation.X) <= 3
                     && Math.Abs(e.Location.Y - _mouseDownLocation.Y) <= 3
-                    && _groupBoundsAtMouseDown.TryGetValue(targets[0].InstanceGuid, out var originalBounds)
-                    && GetCurrentGroupBounds(targets[0]) == originalBounds)
+                    && GetManagedObjects(_document.Objects).All(obj =>
+                        _positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var position)
+                        && position == GetMovementPosition(obj)))
                 {
-                    AddShortcutSelection(targets[0]);
+                    AddShortcutSelection(target.Group);
                     ClearDragState();
                     return;
                 }
-                CancelShortcut("Add to group cancelled: no destination group selected");
+                CancelShortcut(target == null ? "Add to group cancelled: no group under cursor"
+                    : "Add to group cancelled: destination click became a drag");
                 _owner?.ScheduleOutputRefresh();
             }
 
@@ -650,6 +660,9 @@ namespace HopperGroup
 
             // Consume both G presses on the canvas, but require two distinct taps:
             // keyboard auto-repeat must never activate the command.
+            // Do not replay a lone G later: RhinoApp.SendKeystrokes writes to the
+            // current Rhino command line, not the original GH input context. Focus,
+            // command state and key ordering may have changed during the tap window.
             e.Handled = true;
             e.SuppressKeyPress = true;
             if (_groupKeyDown) return;
@@ -657,7 +670,7 @@ namespace HopperGroup
             var timestamp = _shortcutTimestamp();
             if (!_firstGroupTapTimestamp.HasValue
                 || (timestamp - _firstGroupTapTimestamp.Value) * 1000.0 / Stopwatch.Frequency
-                    > GroupTapWindowMilliseconds)
+                    > Math.Max(MinimumGroupTapWindowMilliseconds, _doubleClickTime()))
             {
                 _firstGroupTapTimestamp = timestamp;
                 return;

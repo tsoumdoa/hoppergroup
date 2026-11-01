@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using Grasshopper;
 using Grasshopper.GUI.Canvas;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Special;
 using HopperGroup;
 
 internal static class Program
@@ -76,6 +77,43 @@ internal static class Program
 
     private static void RunTests(Form form)
     {
+        foreach (var overComponent in new[] { false, true })
+        {
+            Check(form, $"Native GG resolves a locked inner destination over {(overComponent ? "a component" : "empty space")}", f =>
+            {
+                var member = new Obj(100); f.Document.Add(member);
+                var child = new GH_Group(f.Document) { NickName = "Inputs [lock]" };
+                child.AddObject(member.InstanceGuid); f.Document.Add(child);
+                var far = new Obj(200); f.Document.Add(far);
+                var parent = new GH_Group(f.Document); parent.AddObject(child.InstanceGuid);
+                parent.AddObject(far.InstanceGuid); f.Document.Add(parent);
+                QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+                f.Document.Selection.Clear(); if (overComponent) f.Document.Selection.Add(member);
+                f.Canvas.Viewport.Zoom = 2; f.Canvas.Viewport.Offset = new PointF(10, 20);
+                f.Canvas.ClickAt(overComponent ? new Point(220, 30) : new Point(208, 30));
+                Assert(child.ObjectIDs.Contains(f.Object.InstanceGuid) && !parent.ObjectIDs.Contains(f.Object.InstanceGuid)
+                    && f.Manager.ShortcutPrompt.Length == 0 && f.Document.UndoServer.UndoCount == 1,
+                    "native GG did not resolve the clicked inner group");
+            });
+        }
+        Check(form, "Queued GG uses an injected system double-click interval above 650ms", f =>
+        {
+            f.TapWindow = 1000;
+            Tap(f.Canvas, Keys.G); f.Timestamp = System.Diagnostics.Stopwatch.Frequency * 8 / 10;
+            Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.ShortcutPrompt.Length > 0 && f.ForwardedKeys == 0 && f.Characters == 0,
+                "native routing ignored the system tap window");
+        });
+        Check(form, "A lone queued G is consumed and a late next G starts a fresh gesture", f =>
+        {
+            f.TapWindow = 200;
+            Tap(f.Canvas, Keys.G); f.Timestamp = System.Diagnostics.Stopwatch.Frequency;
+            Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.ShortcutPrompt.Length == 0 && f.ForwardedKeys == 0 && f.Characters == 0,
+                "expired first tap was replayed or armed GG");
+            Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.ShortcutPrompt.Length > 0, "next quick tap did not finish the new gesture");
+        });
         Check(form, "Baseline KeyPreview consumes G before canvas KeyDown", f =>
         {
             f.Manager.Configure(null, f.Document, false, 1, false);
@@ -324,7 +362,9 @@ internal static class Program
         internal readonly GH_Document Document = new GH_Document();
         internal readonly Obj Object = new Obj();
         internal readonly GH_Canvas Canvas;
-        internal readonly GroupMembershipManager Manager = new GroupMembershipManager(() => 0);
+        internal readonly GroupMembershipManager Manager;
+        internal long Timestamp;
+        internal int TapWindow = SystemInformation.DoubleClickTime;
         internal int ForwardedKeys, Characters;
         private readonly Form _form;
         private readonly KeyEventHandler _keyHandler;
@@ -332,6 +372,7 @@ internal static class Program
 
         internal Fixture(Form form)
         {
+            Manager = new GroupMembershipManager(() => Timestamp, () => TapWindow);
             _form = form;
             Canvas = new GH_Canvas { Document = Document, Location = new Point(5, 30), Size = new Size(300, 200) };
             Document.Add(Object); Document.Selection.Add(Object); Instances.ActiveCanvas = Canvas;

@@ -12,6 +12,7 @@ using HopperGroup;
 #if !REAL_WINFORMS
 namespace System.Windows.Forms
 {
+    public static class SystemInformation { public static int DoubleClickTime = 500; }
     public enum MouseButtons { Left, Right }
     [Flags]
     public enum Keys { None = 0, Escape = 27, G = 71, H = 72, F6 = 117, Shift = 65536, Control = 131072, Alt = 262144 }
@@ -53,6 +54,12 @@ namespace Grasshopper
 }
 namespace Grasshopper.GUI.Canvas
 {
+    public class GH_Viewport
+    {
+        public float Zoom = 1;
+        public PointF Offset;
+        public PointF UnprojectPoint(PointF point) => new((point.X - Offset.X) / Zoom, (point.Y - Offset.Y) / Zoom);
+    }
     public class GH_CanvasDocumentChangedEventArgs : EventArgs
     {
         public GH_Document OldDocument, NewDocument;
@@ -60,6 +67,7 @@ namespace Grasshopper.GUI.Canvas
 #if !REAL_WINFORMS
     public class GH_Canvas
     {
+        public GH_Viewport Viewport { get; } = new();
         public static System.Windows.Forms.Keys NavigationPanLeft, NavigationPanRight,
             NavigationPanUp, NavigationPanDown, NavigationZoomIn, NavigationZoomOut;
         public bool ModifiersEnabled { get; set; } = true;
@@ -83,9 +91,9 @@ namespace Grasshopper.GUI.Canvas
             DocumentChanged?.Invoke(this, new GH_CanvasDocumentChangedEventArgs { OldDocument = previous, NewDocument = document });
         }
         public void Wheel() => MouseWheel?.Invoke(this, new System.Windows.Forms.MouseEventArgs());
-        public void Down() => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
+        public void Down(Point? location = null) => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = location ?? new Point(0, 0) });
         public void Up() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(100, 0) });
-        public void ClickUp() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
+        public void ClickUp(Point? location = null) => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = location ?? new Point(0, 0) });
         public System.Windows.Forms.KeyEventArgs Press(System.Windows.Forms.Keys key, System.Windows.Forms.Keys modifiers = System.Windows.Forms.Keys.None)
         {
             var args = new System.Windows.Forms.KeyEventArgs { KeyCode = key, Modifiers = modifiers };

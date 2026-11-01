@@ -1437,7 +1437,7 @@ class Program
             Assert(!c.Press(System.Windows.Forms.Keys.G).Handled, "G with no selection was intercepted");
             c.Release(System.Windows.Forms.Keys.G);
             d.Selection.Add(o); c.GG();
-            d.Selection.Clear(); c.Down(); c.ClickUp();
+            d.Selection.Clear(); c.Down(new Point(9999, 9999)); c.ClickUp(new Point(9999, 9999));
             Assert(m.ShortcutPrompt == string.Empty && m.Status.Contains("cancelled")
                 && d.UndoServer.UndoCount == 0, "missed destination left stale feedback or changed membership");
         });
@@ -1575,7 +1575,7 @@ class Program
             d.Selection.Add(g);
             c.GG();
             d.Selection.Clear(); d.Selection.Add(child);
-            c.Down(); c.ClickUp();
+            c.Down(new Point(1005, 5)); c.ClickUp(new Point(1005, 5));
             Assert(!child.ObjectIDs.Contains(g.InstanceGuid) && m.LastChangeCount == 0,
                 "GG created a cyclic group hierarchy");
         });
@@ -1588,7 +1588,7 @@ class Program
                 var target = AddGroup(d, new Obj(2000), new Obj(2060));
                 a.Move(500);
                 d.Selection.Add(o); c.GG();
-                d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
+                d.Selection.Clear(); d.Selection.Add(target); c.Down(new Point(2035, 5)); c.ClickUp(new Point(2035, 5));
                 Assert(target.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 1,
                     "GG did not add the captured object");
                 if (reconcileOnDrop) { d.Selection.Clear(); d.Selection.Add(o); c.Down(); o.Move(5); c.Up(); }
@@ -1622,7 +1622,8 @@ class Program
             var added = new Obj(20); d.Add(added);
             a.Move(500);
             d.Selection.Add(added); c.GG();
-            d.Selection.Clear(); d.Selection.Add(child); c.Down(); c.ClickUp();
+            d.Selection.Clear(); d.Selection.Add(child); c.Down(new Point(35, 5)); c.ClickUp(new Point(35, 5));
+            Assert(child.ObjectIDs.Contains(added.InstanceGuid) && m.LastChangeCount == 1, "GG missed the child destination");
             m.RefreshAllObjects();
             Assert(!child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
                 && child.ObjectIDs.Contains(sibling.InstanceGuid) && g.ObjectIDs.Contains(child.InstanceGuid),
@@ -1650,7 +1651,7 @@ class Program
             g.AddObject(middle.InstanceGuid);
             var added = new Obj(1030); d.Add(added);
             d.Selection.Add(g); d.Selection.Add(added); c.GG();
-            d.Selection.Clear(); d.Selection.Add(leaf); c.Down(); c.ClickUp();
+            d.Selection.Clear(); d.Selection.Add(leaf); c.Down(new Point(1005, 5)); c.ClickUp(new Point(1005, 5));
             Assert(!leaf.ObjectIDs.Contains(g.InstanceGuid) && leaf.ObjectIDs.Contains(added.InstanceGuid)
                 && middle.ObjectIDs.Contains(leaf.InstanceGuid) && g.ObjectIDs.Contains(middle.InstanceGuid)
                 && m.LastChangeCount == 1, "deep cycle was accepted or valid addition was lost");

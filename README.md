@@ -12,7 +12,7 @@ aectooling by tomoS
 - Keeps a carried group's members together and preserves nested groups while their individual members change.
 - Keeps surviving contents in the parent group when a nested group is deleted or ungrouped.
 - Adds a dragged group to another group when its whole bounding box fits inside the destination.
-- With objects selected and the canvas focused, tap `G` twice within 650 ms, then click one destination group to add them in one step. Press `Esc` to cancel.
+- With objects selected and the canvas focused, tap `G` twice within the larger of 650 ms and the system double-click interval, then click anywhere inside the destination group (including a component or empty space). The innermost group under the cursor receives the objects in one step. Press `Esc` to cancel.
 - Provides manual refresh and optional debug logging.
 - Groups with `[lock]` anywhere in their nickname (case-insensitive) opt out: drag, placement, nested-group handling, deletion promotion, and Refresh never edit their membership. They are skipped as automatic destinations, so the next eligible containing group is used, or none. Explicit GG additions can still target them.
 - Marks cached group regions dirty when groups are created or deleted.
@@ -154,6 +154,8 @@ dotnet run --project tests/HopperGroup.RegressionTests -c Release
 These checks compile the production manager against a simulated canvas, group geometry, undo-record server, and completed undo/redo notifications. Group deletion checks replay simulated removal and membership actions in host order; other undo/redo scenarios restore positions and memberships explicitly before raising the host event. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
 
 On Windows, GG intercepts keys on the focused Grasshopper canvas before the editor can forward them to Rhino. It consumes both taps and their translated characters, requires physical releases between taps, and leaves text fields, modified keys, native canvas interactions, and reserved navigation/menu bindings available to the host. Multiple enabled HopperGroup components share one shortcut owner. Document changes, focus changes, other keys, mouse clicks, and wheel events reset incomplete gestures. Non-Windows builds retain the managed canvas key callbacks.
+
+A lone `G` with a selection is also consumed. It is not replayed after the tap window: Rhino's `SendKeystrokes` targets its current command line rather than the original Grasshopper key context, and delayed input could reach a different command or focus state. With no selection, `G` is left to the host.
 
 Run the Windows input checks with the .NET 10 SDK on Windows:
 
