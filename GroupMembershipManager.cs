@@ -884,7 +884,6 @@ namespace HopperGroup
             var changedGroups = new HashSet<Guid>();
             foreach (var group in objectsById.Values.OfType<GH_Group>())
             {
-                if (IsAutoLocked(group)) continue;
                 var bounds = GetSettledGroupBounds(group, objectsById, boundsById, changedGroups,
                     new HashSet<Guid>(), externalContext);
                 if (bounds.Width > 0f && bounds.Height > 0f)
@@ -1236,7 +1235,9 @@ namespace HopperGroup
 
             foreach (var group in BuildObjectIndex(_document.Objects).Values.OfType<GH_Group>())
             {
-                if (!IsAutoLocked(group) && TryCreateRegion(group, out var region))
+                // Locked groups still describe the document's topology and carried
+                // subtrees. Apply the lock only at automatic destinations/mutations.
+                if (TryCreateRegion(group, out var region))
                 {
                     _groups.Add(region);
                 }
@@ -1336,6 +1337,7 @@ namespace HopperGroup
                 // Internal subtree links travel together. Only roots acquire a new
                 // destination, and an existing descendant can never become a parent.
                 var target = hasCarriedParent ? null : _groups.Where(parent => parent.Id != child.Id
+                        && !IsAutoLocked(parent.Group)
                         && !childContext.IsCarriedGroup(parent.Id)
                         && GetArea(ParentBounds(parent)) > child.Area
                         && ContainsRectangle(ParentBounds(parent), child.Bounds)
@@ -1344,7 +1346,7 @@ namespace HopperGroup
                 var retained = false;
                 foreach (var parent in currentParents)
                 {
-                    if (childContext.IsCarriedGroup(parent.Id) || parent.Id == target?.Id
+                    if (IsAutoLocked(parent.Group) || childContext.IsCarriedGroup(parent.Id) || parent.Id == target?.Id
                         || (GetExitBounds(ParentBounds(parent), child.Bounds).IntersectsWith(child.Bounds)
                             && (target == null || IsAncestor(target.Id, parent.Id))))
                     {
@@ -1610,6 +1612,7 @@ namespace HopperGroup
             }
 
             var center = GetObjectCenter(obj);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var currentGroups = _groups
                 .Where(region => region.Group.ObjectIDs.Contains(obj.InstanceGuid))
                 .ToList();
@@ -1618,7 +1621,12 @@ namespace HopperGroup
             var protectedGroups = currentGroups.Where(region => !selectionContext.IsCarriedGroup(region.Id)
                 && ExitBounds(region).Contains(center)).ToList();
             var target = FindInnermostContainingGroup(center, destinationContext ?? selectionContext,
-                region => (!currentGroups.Contains(region) || selectionContext.IsCarriedGroup(region.Id)
+                // A locked descendant cannot be an automatic destination, but its
+                // leaves still belong to its ancestors indirectly. Do not duplicate
+                // them as direct members when dragging or refreshing that subtree.
+                region => (currentGroups.Contains(region)
+                        || !GroupContainsDescendant(region.Group, obj.InstanceGuid, objectsById))
+                    && (!currentGroups.Contains(region) || selectionContext.IsCarriedGroup(region.Id)
                         || ExitBounds(region).Contains(center))
                     && protectedGroups.All(current => current.Id == region.Id || IsAncestor(current.Id, region.Id)));
 
@@ -1628,7 +1636,7 @@ namespace HopperGroup
             foreach (var current in currentGroups)
             {
                 var exitBounds = ExitBounds(current);
-                if (selectionContext.IsCarriedGroup(current.Id)
+                if (IsAutoLocked(current.Group) || selectionContext.IsCarriedGroup(current.Id)
                     || (target != null && current.Id == target.Id)
                     || (exitBounds.Contains(center)
                         && (target == null || IsAncestor(target.Id, current.Id))))
@@ -1661,12 +1669,13 @@ namespace HopperGroup
         {
             if (!selectionContext.HasCarriedGroups)
             {
-                return _groups.FirstOrDefault(region => region.Bounds.Contains(point) && (eligible == null || eligible(region)));
+                return _groups.FirstOrDefault(region => !IsAutoLocked(region.Group)
+                    && region.Bounds.Contains(point) && (eligible == null || eligible(region)));
             }
 
             // A carried group receives new members at its destination, not its old footprint.
             return _groups
-                .Where(region => eligible == null || eligible(region))
+                .Where(region => !IsAutoLocked(region.Group) && (eligible == null || eligible(region)))
                 .Select(region => selectionContext.IsCarriedGroup(region.Id)
                     ? new GroupRegion(region.Group, GetCurrentGroupBounds(region.Group))
                     : region)

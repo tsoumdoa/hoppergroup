@@ -46,6 +46,51 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        foreach (var operation in new[] { "drag", "Refresh", "external carry + Refresh" })
+        {
+            check($"A locked child's leaves stay indirect during {operation}", () =>
+            {
+                using var f = new Fixture();
+                var a = new Obj(0); var b = new Obj(20); var child = f.Group(a, b); child.NickName = "[lock]";
+                var c = new Obj(100); var parent = f.Group(child, c); f.Start();
+                if (operation == "drag")
+                {
+                    f.Document.Selection.AddRange(new IGH_DocumentObject[] { parent, a, b, c });
+                    f.Canvas.Down(); a.Move(500); b.Move(500); c.Move(500); f.Canvas.Up();
+                }
+                else
+                {
+                    if (operation.StartsWith("external")) { a.Move(500); b.Move(500); c.Move(500); }
+                    f.Manager.RefreshAllObjects();
+                }
+                Assert(parent.ObjectIDs.SequenceEqual(new[] { child.InstanceGuid, c.InstanceGuid })
+                    && child.ObjectIDs.SequenceEqual(new[] { a.InstanceGuid, b.InstanceGuid })
+                    && f.Manager.LastChangeCount == 0, "unchanged locked subtree gained direct parent memberships");
+            });
+        }
+        foreach (var lockDeleted in new[] { false, true })
+        {
+            foreach (var lockDestination in new[] { false, true })
+            {
+                check($"Deletion promotion preserves a locked child (deleted locked: {lockDeleted}, parent locked: {lockDestination})", () =>
+                {
+                    using var f = new Fixture();
+                    var a = new Obj(0); var b = new Obj(20); var child = f.Group(a, b); child.NickName = "[lock]";
+                    var c = new Obj(100); var deleted = f.Group(child, c); if (lockDeleted) deleted.NickName = "[lock]";
+                    var outer = new Obj(200); var parent = f.Group(deleted, outer);
+                    if (lockDestination) parent.NickName = "[lock]";
+                    f.Start(); f.Document.Delete(deleted);
+                    var expected = lockDestination ? new[] { deleted.InstanceGuid, outer.InstanceGuid }
+                        : new[] { outer.InstanceGuid, child.InstanceGuid, c.InstanceGuid };
+                    Assert(parent.ObjectIDs.Count == expected.Length && expected.All(parent.ObjectIDs.Contains)
+                        && child.ObjectIDs.SequenceEqual(new[] { a.InstanceGuid, b.InstanceGuid }),
+                        "deletion edited a locked destination or flattened the surviving child");
+                    f.Manager.RefreshAllObjects();
+                    Assert(parent.ObjectIDs.Count == expected.Length && expected.All(parent.ObjectIDs.Contains)
+                        && f.Manager.LastChangeCount == 0, "Refresh flattened the promoted locked subtree");
+                });
+            }
+        }
         foreach (var rightMember in new[] { false, true })
         {
             foreach (var delta in new[] { new PointF(1, 0), new PointF(-1, 0), new PointF(0, 1),
