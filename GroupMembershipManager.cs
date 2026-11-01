@@ -17,16 +17,20 @@ namespace HopperGroup
     {
         // Grasshopper layouts can round pivots to whole canvas units independently.
         private const float TranslationTolerance = 1f;
-        private const int GroupTapWindowMilliseconds = 650;
+        private const float ExitSizeMultiplier = 1.5f;
+        private const float MinimumExitBuffer = 40f;
+        private const float MaximumExitBuffer = 120f;
+        private const int MinimumGroupTapWindowMilliseconds = 650;
         internal const int DebugLogLineLimit = 200;
         private readonly Func<long> _shortcutTimestamp;
+        private readonly Func<int> _doubleClickTime;
         private long? _firstGroupTapTimestamp;
         private bool _groupKeyDown;
         private readonly List<GroupRegion> _groups = new List<GroupRegion>();
-        private readonly Dictionary<Guid, Guid> _parentByChild = new Dictionary<Guid, Guid>();
         private readonly Dictionary<Guid, PointF> _positionsAtMouseDown = new Dictionary<Guid, PointF>();
         private readonly Dictionary<Guid, RectangleF> _groupBoundsAtMouseDown = new Dictionary<Guid, RectangleF>();
         private readonly Dictionary<Guid, RectangleF> _settledGroupBounds = new Dictionary<Guid, RectangleF>();
+        private readonly Dictionary<Guid, RectangleF> _exitBaselineBounds = new Dictionary<Guid, RectangleF>();
         private readonly Dictionary<Guid, HashSet<Guid>> _settledGroupMembers = new Dictionary<Guid, HashSet<Guid>>();
         private readonly Dictionary<Guid, PointF> _settledObjectPositions = new Dictionary<Guid, PointF>();
         private readonly HashSet<Guid> _newObjectIdsSinceSettled = new HashSet<Guid>();
@@ -38,6 +42,8 @@ namespace HopperGroup
         private GH_Canvas _canvas;
         private IDisposable _nativeShortcut;
         private GH_UndoRecord _pendingRemovalUndo;
+        private bool _documentSubscribed;
+        private readonly HashSet<string> _reportedErrors = new HashSet<string>();
         private bool _enabled;
         private bool _requestedEnabled;
         private bool _debug;
@@ -49,6 +55,7 @@ namespace HopperGroup
         private float _exitScale = 1f;
 
         public string Status { get; private set; } = "Ready";
+        private string ActiveStatus => $"Active · {_groups.Count} group{(_groups.Count == 1 ? "" : "s")}";
         public int GroupCount => _groups.Count;
         public int LastChangeCount { get; private set; }
         public string DebugLog => _debugLog.Count == 0
@@ -58,14 +65,18 @@ namespace HopperGroup
             ? $"Add {_shortcutObjectIds.Count} object(s)\nClick group; Esc cancels"
             : string.Empty;
         private string PendingShortcutStatus =>
-            $"GG: click one destination group for {_shortcutObjectIds.Count} object(s); Esc cancels";
+            $"GG: click inside a destination group for {_shortcutObjectIds.Count} object(s); Esc cancels";
 
-        internal GroupMembershipManager(Func<long> shortcutTimestamp = null)
+        internal GroupMembershipManager(Func<long> shortcutTimestamp = null, Func<int> doubleClickTime = null)
         {
             _shortcutTimestamp = shortcutTimestamp ?? Stopwatch.GetTimestamp;
+            _doubleClickTime = doubleClickTime ?? (() => SystemInformation.DoubleClickTime);
         }
 
-        public void Configure(HopperGroupComponent owner, GH_Document document, bool enabled, float exitScale, bool debug)
+        public void Configure(HopperGroupComponent owner, GH_Document document, bool enabled, float exitScale, bool debug) =>
+            Guard("Configure", () => ConfigureCore(owner, document, enabled, exitScale, debug));
+
+        private void ConfigureCore(HopperGroupComponent owner, GH_Document document, bool enabled, float exitScale, bool debug)
         {
             var wasEnabled = _enabled;
             var documentChanged = _document != document;
@@ -112,7 +123,7 @@ namespace HopperGroup
                 }
                 if (!wasEnabled || documentChanged)
                 {
-                    Status = $"Enabled - cached {_groups.Count} group region(s)";
+                    Status = ActiveStatus;
                 }
             }
             else
@@ -122,19 +133,21 @@ namespace HopperGroup
                 ClearDragState();
                 ClearSettledLayout();
                 _groups.Clear();
-                _parentByChild.Clear();
                 LastChangeCount = 0;
-                Status = "Disabled";
+                Status = "Off";
             }
-            _owner?.UpdateShortcutPrompt();
+            Guard("UpdateShortcutPrompt", () => _owner?.UpdateShortcutPrompt());
         }
 
-        public void RefreshAllObjects()
+        public void RefreshAllObjects() =>
+            Guard("RefreshAllObjects", () => RefreshAllObjectsCore());
+
+        private void RefreshAllObjectsCore()
         {
             if (!_enabled || _document == null)
             {
                 LastChangeCount = 0;
-                Status = _enabled ? "No document" : "Disabled";
+                Status = _enabled ? "No document" : "Off";
                 return;
             }
 
@@ -142,29 +155,40 @@ namespace HopperGroup
                 selectionContext: SelectionContext.Empty, reconcileExternalMoves: true);
         }
 
-        public void Dispose()
+        public void Dispose() =>
+            Guard("Dispose", () => DisposeCore());
+
+        private void DisposeCore()
         {
             _enabled = false;
             _requestedEnabled = false;
-            UnwireCanvas();
-            UnsubscribeDocument();
-            _groups.Clear();
-            _parentByChild.Clear();
-            ClearDragState();
-            ClearSettledLayout();
-            if (_owner != null)
+            try
             {
-                _owner.ObjectChanged -= OnOwnerChanged;
-                _owner = null;
+                UnwireCanvas();
             }
-            _document = null;
+            finally
+            {
+                UnsubscribeDocument();
+                _groups.Clear();
+                ClearDragState();
+                ClearSettledLayout();
+                if (_owner != null)
+                {
+                    _owner.ObjectChanged -= OnOwnerChanged;
+                    _owner = null;
+                }
+                _document = null;
+            }
         }
 
-        private void OnOwnerChanged(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e)
+        private void OnOwnerChanged(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e) =>
+            Guard("OnOwnerChanged", () => OnOwnerChangedCore(sender, e));
+
+        private void OnOwnerChangedCore(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e)
         {
             // Grasshopper does not solve a locked component, so its own Disable
             // command must stop the event handlers without waiting for SolveInstance.
-            if (e.Type == GH_ObjectEventType.Enabled)
+            if (_owner != null && e.Type == GH_ObjectEventType.Enabled)
             {
                 Configure(_owner, _document, _requestedEnabled, _exitScale, _debug);
                 if (_enabled) _owner?.ScheduleOutputRefresh();
@@ -173,11 +197,12 @@ namespace HopperGroup
 
         private void SubscribeDocument()
         {
-            if (_document == null)
+            if (_document == null || _documentSubscribed)
             {
                 return;
             }
 
+            _documentSubscribed = true;
             _document.ObjectsAdded += OnObjectsAdded;
             _document.ObjectsDeleted += OnObjectsDeleted;
             _document.UndoStateChanged += OnUndoStateChanged;
@@ -186,17 +211,21 @@ namespace HopperGroup
         private void UnsubscribeDocument()
         {
             _pendingRemovalUndo = null;
-            if (_document == null)
+            if (_document == null || !_documentSubscribed)
             {
                 return;
             }
 
+            _documentSubscribed = false;
             _document.ObjectsAdded -= OnObjectsAdded;
             _document.ObjectsDeleted -= OnObjectsDeleted;
             _document.UndoStateChanged -= OnUndoStateChanged;
         }
 
-        private void OnUndoStateChanged(object sender, GH_DocUndoEventArgs e)
+        private void OnUndoStateChanged(object sender, GH_DocUndoEventArgs e) =>
+            Guard("OnUndoStateChanged", () => OnUndoStateChangedCore(sender, e));
+
+        private void OnUndoStateChangedCore(object sender, GH_DocUndoEventArgs e)
         {
             if (!_enabled || _handlingDrop)
             {
@@ -222,7 +251,7 @@ namespace HopperGroup
             RebuildGroupCache();
             RememberSettledLayout();
             LastChangeCount = 0;
-            Status = $"Enabled - cached {_groups.Count} group region(s)";
+            Status = ActiveStatus;
             _owner?.ScheduleOutputRefresh();
         }
 
@@ -244,32 +273,40 @@ namespace HopperGroup
             _canvas.DocumentChanged += OnCanvasDocumentChanged;
             _canvas.MouseWheel += OnCanvasMouseWheel;
             _nativeShortcut = CanvasShortcutHook.Attach(_canvas, CanCaptureShortcut,
-                DispatchNativeShortcut, ResetGroupTaps);
+                DispatchNativeShortcut, () => Guard("ShortcutReset", ResetGroupTaps));
             Log("Subscribed to active Grasshopper canvas mouse events.");
         }
 
         private void UnwireCanvas()
         {
             CancelShortcut();
-            _nativeShortcut?.Dispose();
+            var shortcut = _nativeShortcut;
             _nativeShortcut = null;
-            if (_canvas == null)
+            try
             {
-                return;
+                shortcut?.Dispose();
             }
-
-            _canvas.MouseDown -= OnCanvasMouseDown;
-            _canvas.MouseUp -= OnCanvasMouseUp;
-            _canvas.KeyDown -= OnCanvasKeyDown;
-            _canvas.KeyUp -= OnCanvasKeyUp;
-            _canvas.LostFocus -= OnCanvasLostFocus;
-            _canvas.DocumentChanged -= OnCanvasDocumentChanged;
-            _canvas.MouseWheel -= OnCanvasMouseWheel;
-            _canvas = null;
-            ClearDragState();
+            finally
+            {
+                if (_canvas != null)
+                {
+                    _canvas.MouseDown -= OnCanvasMouseDown;
+                    _canvas.MouseUp -= OnCanvasMouseUp;
+                    _canvas.KeyDown -= OnCanvasKeyDown;
+                    _canvas.KeyUp -= OnCanvasKeyUp;
+                    _canvas.LostFocus -= OnCanvasLostFocus;
+                    _canvas.DocumentChanged -= OnCanvasDocumentChanged;
+                    _canvas.MouseWheel -= OnCanvasMouseWheel;
+                    _canvas = null;
+                }
+                ClearDragState();
+            }
         }
 
-        private void OnObjectsAdded(object sender, GH_DocObjectEventArgs e)
+        private void OnObjectsAdded(object sender, GH_DocObjectEventArgs e) =>
+            Guard("OnObjectsAdded", () => OnObjectsAddedCore(sender, e));
+
+        private void OnObjectsAddedCore(object sender, GH_DocObjectEventArgs e)
         {
             if (!_enabled)
             {
@@ -278,6 +315,11 @@ namespace HopperGroup
 
             foreach (var obj in e.Objects.Where(obj => obj != null && !(obj is GH_Group)))
             {
+                if (!ReferenceEquals(_document.Objects.FirstOrDefault(existing => existing.InstanceGuid == obj.InstanceGuid), obj))
+                {
+                    Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
+                    continue;
+                }
                 _addedObjectIds.Add(obj.InstanceGuid);
                 if (_hasSettledLayout && IsManagedObject(obj))
                 {
@@ -289,7 +331,10 @@ namespace HopperGroup
             OnObjectsChanged(e);
         }
 
-        private void OnObjectsDeleted(object sender, GH_DocObjectEventArgs e)
+        private void OnObjectsDeleted(object sender, GH_DocObjectEventArgs e) =>
+            Guard("OnObjectsDeleted", () => OnObjectsDeletedCore(sender, e));
+
+        private void OnObjectsDeletedCore(object sender, GH_DocObjectEventArgs e)
         {
             if (!_enabled)
             {
@@ -308,6 +353,7 @@ namespace HopperGroup
                 _newObjectIdsSinceSettled.Remove(obj.InstanceGuid);
                 selectionChanged |= _shortcutObjectIds.Remove(obj.InstanceGuid);
                 _settledGroupBounds.Remove(obj.InstanceGuid);
+                _exitBaselineBounds.Remove(obj.InstanceGuid);
                 _settledGroupMembers.Remove(obj.InstanceGuid);
             }
 
@@ -317,7 +363,7 @@ namespace HopperGroup
                 LastChangeCount = changes;
                 _document.IsModified = true;
                 Status = _shortcutObjectIds.Count > 0 ? PendingShortcutStatus
-                    : $"Enabled - cached {_groups.Count} group region(s), {changes} change(s)";
+                    : $"Last: {changes} membership updates";
                 Instances.InvalidateCanvas();
             }
             if (selectionChanged)
@@ -337,16 +383,17 @@ namespace HopperGroup
 
         private int PromoteDeletedGroupContents(IEnumerable<GH_Group> deletedGroups, GH_UndoRecord removalUndo)
         {
-            var deletedById = deletedGroups.ToDictionary(group => group.InstanceGuid);
+            var deletedById = BuildObjectIndex(deletedGroups);
             if (deletedById.Count == 0)
             {
                 return 0;
             }
 
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var changes = 0;
-            foreach (var parent in _document.Objects.OfType<GH_Group>())
+            foreach (var parent in objectsById.Values.OfType<GH_Group>())
             {
+                if (IsAutoLocked(parent)) continue;
                 // Use real membership links, including parents left without visible bounds.
                 // Geometric containment cannot identify the original parent after deletion.
                 var removedChildren = parent.ObjectIDs.Where(deletedById.ContainsKey).ToList();
@@ -412,13 +459,16 @@ namespace HopperGroup
                     SyncSettledGroups();
                     Status = _shortcutObjectIds.Count > 0
                         ? PendingShortcutStatus
-                        : $"Enabled - cached {_groups.Count} group region(s)";
+                        : ActiveStatus;
                     _owner?.ScheduleOutputRefresh();
                 }
             }
         }
 
-        private void OnCanvasMouseDown(object sender, MouseEventArgs e)
+        private void OnCanvasMouseDown(object sender, MouseEventArgs e) =>
+            Guard("OnCanvasMouseDown", () => OnCanvasMouseDownCore(sender, e));
+
+        private void OnCanvasMouseDownCore(object sender, MouseEventArgs e)
         {
             ResetGroupTaps();
             if (!_enabled || _handlingDrop || e.Button != MouseButtons.Left || !IsCurrentCanvasDocument())
@@ -447,7 +497,10 @@ namespace HopperGroup
             Log("Frozen group cache at drag start.");
         }
 
-        private void OnCanvasMouseUp(object sender, MouseEventArgs e)
+        private void OnCanvasMouseUp(object sender, MouseEventArgs e) =>
+            Guard("OnCanvasMouseUp", () => OnCanvasMouseUpCore(sender, e));
+
+        private void OnCanvasMouseUpCore(object sender, MouseEventArgs e)
         {
             if (!_enabled || _handlingDrop || e.Button != MouseButtons.Left || !IsCurrentCanvasDocument())
             {
@@ -456,19 +509,27 @@ namespace HopperGroup
 
             if (_shortcutObjectIds.Count > 0)
             {
-                var targets = _document.SelectedObjects().OfType<GH_Group>().ToList();
-                if (targets.Count == 1 && !_shortcutObjectIds.Contains(targets[0].InstanceGuid)
-                    && _hasMouseDownSnapshot
+                var point = _canvas.Viewport.UnprojectPoint(e.Location);
+                // Explicit clicks include [lock] groups, independent of what GH
+                // selected (a component, the outline, or nothing at all).
+                var target = BuildObjectIndex(_document.Objects).Values.OfType<GH_Group>()
+                    .Where(group => !_shortcutObjectIds.Contains(group.InstanceGuid))
+                    .Select(group => TryCreateRegion(group, out var region) ? region : null)
+                    .Where(region => region != null && region.Bounds.Contains(point))
+                    .OrderBy(region => region.Area).FirstOrDefault();
+                if (target != null && _hasMouseDownSnapshot
                     && Math.Abs(e.Location.X - _mouseDownLocation.X) <= 3
                     && Math.Abs(e.Location.Y - _mouseDownLocation.Y) <= 3
-                    && _groupBoundsAtMouseDown.TryGetValue(targets[0].InstanceGuid, out var originalBounds)
-                    && GetCurrentGroupBounds(targets[0]) == originalBounds)
+                    && GetManagedObjects(_document.Objects).All(obj =>
+                        _positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var position)
+                        && position == GetMovementPosition(obj)))
                 {
-                    AddShortcutSelection(targets[0]);
+                    AddShortcutSelection(target.Group);
                     ClearDragState();
                     return;
                 }
-                CancelShortcut("Add to group cancelled: no destination group selected");
+                CancelShortcut(target == null ? "Add to group cancelled: no group under cursor"
+                    : "Add to group cancelled: destination click became a drag");
                 _owner?.ScheduleOutputRefresh();
             }
 
@@ -522,13 +583,23 @@ namespace HopperGroup
                 externalSnapshot: externalSnapshot);
         }
 
-        private void OnCanvasKeyDown(object sender, KeyEventArgs e)
+        private void OnCanvasKeyDown(object sender, KeyEventArgs e) =>
+            Guard("OnCanvasKeyDown", () => OnCanvasKeyDownCore(sender, e));
+
+        private void OnCanvasKeyDownCore(object sender, KeyEventArgs e)
         {
             if (_nativeShortcut != null && e.KeyCode != Keys.Escape) return;
             HandleShortcutKeyDown(e);
         }
 
         private bool CanCaptureShortcut(Keys key)
+        {
+            var eligible = false;
+            Guard("CanCaptureShortcut", () => eligible = CanCaptureShortcutCore(key));
+            return eligible;
+        }
+
+        private bool CanCaptureShortcutCore(Keys key)
         {
             if (!_enabled || !IsCurrentCanvasDocument() || _handlingDrop
                 || (_owner != null && _owner.Locked) || !_canvas.ModifiersEnabled
@@ -542,7 +613,10 @@ namespace HopperGroup
                 || _document.SelectedObjects().Any(obj => obj != null && obj != _owner));
         }
 
-        private void DispatchNativeShortcut(Keys key, bool down)
+        private void DispatchNativeShortcut(Keys key, bool down) =>
+            Guard("DispatchNativeShortcut", () => DispatchNativeShortcutCore(key, down));
+
+        private void DispatchNativeShortcutCore(Keys key, bool down)
         {
             var args = new KeyEventArgs(key);
             if (down) HandleShortcutKeyDown(args);
@@ -586,6 +660,9 @@ namespace HopperGroup
 
             // Consume both G presses on the canvas, but require two distinct taps:
             // keyboard auto-repeat must never activate the command.
+            // Do not replay a lone G later: RhinoApp.SendKeystrokes writes to the
+            // current Rhino command line, not the original GH input context. Focus,
+            // command state and key ordering may have changed during the tap window.
             e.Handled = true;
             e.SuppressKeyPress = true;
             if (_groupKeyDown) return;
@@ -593,7 +670,7 @@ namespace HopperGroup
             var timestamp = _shortcutTimestamp();
             if (!_firstGroupTapTimestamp.HasValue
                 || (timestamp - _firstGroupTapTimestamp.Value) * 1000.0 / Stopwatch.Frequency
-                    > GroupTapWindowMilliseconds)
+                    > Math.Max(MinimumGroupTapWindowMilliseconds, _doubleClickTime()))
             {
                 _firstGroupTapTimestamp = timestamp;
                 return;
@@ -601,7 +678,16 @@ namespace HopperGroup
             _firstGroupTapTimestamp = null;
 
             var groups = selected.OfType<GH_Group>().ToList();
-            if (groups.Count == 1 && _shortcutObjectIds.Count > 0)
+            var nonGroups = selected.Where(obj => obj != null && obj != _owner && !(obj is GH_Group)).ToList();
+            if (groups.Count == 1 && nonGroups.Count > 0)
+            {
+                // A single selected group supplies an explicit destination. Use
+                // exactly the same additive membership/undo path as a GG click.
+                _shortcutObjectIds.Clear();
+                foreach (var obj in nonGroups) _shortcutObjectIds.Add(obj.InstanceGuid);
+                AddShortcutSelection(groups[0]);
+            }
+            else if (groups.Count == 1 && _shortcutObjectIds.Count > 0)
             {
                 AddShortcutSelection(groups[0]);
             }
@@ -619,19 +705,29 @@ namespace HopperGroup
             }
         }
 
-        private void OnCanvasKeyUp(object sender, KeyEventArgs e)
+        private void OnCanvasKeyUp(object sender, KeyEventArgs e) =>
+            Guard("OnCanvasKeyUp", () => OnCanvasKeyUpCore(sender, e));
+
+        private void OnCanvasKeyUpCore(object sender, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.G) _groupKeyDown = false;
         }
 
-        private void OnCanvasLostFocus(object sender, EventArgs e)
+        private void OnCanvasLostFocus(object sender, EventArgs e) =>
+            Guard("OnCanvasLostFocus", () => OnCanvasLostFocusCore(sender, e));
+
+        private void OnCanvasLostFocusCore(object sender, EventArgs e)
         {
             ResetGroupTaps();
         }
 
-        private void OnCanvasMouseWheel(object sender, MouseEventArgs e) => ResetGroupTaps();
+        private void OnCanvasMouseWheel(object sender, MouseEventArgs e) =>
+            Guard("OnCanvasMouseWheel", ResetGroupTaps);
 
-        private void OnCanvasDocumentChanged(object sender, GH_CanvasDocumentChangedEventArgs e)
+        private void OnCanvasDocumentChanged(object sender, GH_CanvasDocumentChangedEventArgs e) =>
+            Guard("OnCanvasDocumentChanged", () => OnCanvasDocumentChangedCore(sender, e));
+
+        private void OnCanvasDocumentChangedCore(object sender, GH_CanvasDocumentChangedEventArgs e)
         {
             CancelShortcut(_shortcutObjectIds.Count > 0
                 ? "Add to group cancelled: active document changed" : null);
@@ -649,12 +745,12 @@ namespace HopperGroup
             _shortcutObjectIds.Clear();
             ResetGroupTaps();
             if (status != null) Status = status;
-            _owner?.UpdateShortcutPrompt();
+            Guard("UpdateShortcutPrompt", () => _owner?.UpdateShortcutPrompt());
         }
 
         private void AddShortcutSelection(GH_Group target)
         {
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var recordedGroups = new HashSet<Guid>();
             var changes = 0;
             foreach (var id in _shortcutObjectIds)
@@ -680,9 +776,12 @@ namespace HopperGroup
                 // pending external moves that still need their settled boundaries.
             }
             LastChangeCount = changes;
-            Status = $"Added {changes} object(s) to group";
+            Status = changes > 0 ? $"Last: +{changes} → '{GroupLabel(target)}'" : $"Already in '{GroupLabel(target)}'";
             _owner?.ScheduleOutputRefresh();
         }
+
+        private static string GroupLabel(GH_Group group) =>
+            string.IsNullOrWhiteSpace(group.NickName) ? "Group" : group.NickName;
 
         private static bool GroupContainsDescendant(GH_Group group, Guid id,
             Dictionary<Guid, IGH_DocumentObject> objectsById)
@@ -721,6 +820,7 @@ namespace HopperGroup
 
         private void ClearSettledLayout()
         {
+            _exitBaselineBounds.Clear();
             _settledGroupBounds.Clear();
             _settledGroupMembers.Clear();
             _settledObjectPositions.Clear();
@@ -728,8 +828,9 @@ namespace HopperGroup
             _hasSettledLayout = false;
         }
 
-        private void RememberSettledLayout()
+        private void RememberSettledLayout(bool preserveExitBaselines = false, SelectionContext carried = null)
         {
+            UpdateExitBaselines(!preserveExitBaselines, carried);
             _settledGroupBounds.Clear();
             _settledGroupMembers.Clear();
             foreach (var group in _groups)
@@ -775,10 +876,10 @@ namespace HopperGroup
         private void RestoreSettledGroupCache(SelectionContext externalContext)
         {
             _groups.Clear();
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var boundsById = new Dictionary<Guid, RectangleF>();
             var changedGroups = new HashSet<Guid>();
-            foreach (var group in _document.Objects.OfType<GH_Group>())
+            foreach (var group in objectsById.Values.OfType<GH_Group>())
             {
                 var bounds = GetSettledGroupBounds(group, objectsById, boundsById, changedGroups,
                     new HashSet<Guid>(), externalContext);
@@ -789,7 +890,6 @@ namespace HopperGroup
             }
 
             _groups.Sort((left, right) => left.Area.CompareTo(right.Area));
-            BuildDesiredGroupHierarchy();
         }
 
         private RectangleF GetSettledGroupBounds(GH_Group group,
@@ -888,7 +988,7 @@ namespace HopperGroup
 
         private SelectionContext CreateExternalMovementContext(HashSet<Guid> eligibleIds, MovementSnapshot snapshot)
         {
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var translations = new Dictionary<Guid, PointF?>();
             var carriedIds = new HashSet<Guid>();
             foreach (var group in _document.Objects.OfType<GH_Group>())
@@ -989,6 +1089,8 @@ namespace HopperGroup
                 var recordedGroups = new HashSet<Guid>();
                 var processedIds = new HashSet<Guid>(objects.Select(obj => obj.InstanceGuid));
                 selectionContext = selectionContext ?? SelectionContext.Empty;
+                var carriedIds = new HashSet<Guid>(_groups.Where(group => selectionContext.IsCarriedGroup(group.Id))
+                    .Select(group => group.Id));
 
                 if (reconcileExternalMoves && _hasSettledLayout)
                 {
@@ -1019,14 +1121,20 @@ namespace HopperGroup
                                 }
                             }
                             _groups.Sort((left, right) => left.Area.CompareTo(right.Area));
-                            BuildDesiredGroupHierarchy();
                         }
                         var combinedContext = new SelectionContext(new HashSet<Guid>(_groups
                             .Where(group => selectionContext.IsCarriedGroup(group.Id)
                                 || externalContext.IsCarriedGroup(group.Id))
                             .Select(group => group.Id)));
+                        carriedIds.UnionWith(_groups.Where(group => combinedContext.IsCarriedGroup(group.Id))
+                            .Select(group => group.Id));
                         var boundsBeforeMove = _groups.ToDictionary(group => group.Id, group => group.Bounds);
                         var destinationContext = externalSnapshot == null ? combinedContext : selectionContext;
+                        // A coherent external carry before mouse-down establishes a new
+                        // baseline for the following native drag. Pending individual
+                        // departures keep their old reference, never their live extents.
+                        UpdateExitBaselines(false, externalSnapshot != null ? externalContext : null);
+                        var settledExitReferences = CreateExitReferences();
                         foreach (var obj in externallyMoved)
                         {
                             // External carrying protects members only until a new native drag moves
@@ -1035,13 +1143,13 @@ namespace HopperGroup
                             var memberContext = externalSnapshot != null && nativeMovedIds.Contains(obj.InstanceGuid)
                                 ? selectionContext
                                 : combinedContext;
-                            LastChangeCount += UpdateObjectMembership(obj, recordedGroups, memberContext, destinationContext);
+                            LastChangeCount += UpdateObjectMembership(obj, recordedGroups, memberContext,
+                                settledExitReferences, destinationContext);
                         }
 
                         RebuildGroupCache();
                         if (combinedContext.HasCarriedGroups)
                         {
-                            BuildDesiredGroupHierarchy(boundsBeforeMove, destinationContext);
                             LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups, destinationContext, boundsBeforeMove,
                                 combinedContext);
                             RebuildGroupCache();
@@ -1063,15 +1171,15 @@ namespace HopperGroup
                     ? _groups.ToDictionary(group => group.Id, group => group.Bounds)
                     : null;
 
+                var gestureExitReferences = CreateExitReferences();
                 foreach (var obj in objects)
                 {
-                    LastChangeCount += UpdateObjectMembership(obj, recordedGroups, selectionContext);
+                    LastChangeCount += UpdateObjectMembership(obj, recordedGroups, selectionContext, gestureExitReferences);
                 }
 
                 if (selectionContext.HasCarriedGroups)
                 {
                     RebuildGroupCache();
-                    BuildDesiredGroupHierarchy(boundsBeforeCarriedGroupMove, selectionContext);
                     LastChangeCount += EnsureNestedGroupHierarchy(recordedGroups, selectionContext, boundsBeforeCarriedGroupMove);
                     RebuildGroupCache();
                 }
@@ -1080,7 +1188,7 @@ namespace HopperGroup
                     RebuildGroupCache();
                 }
 
-                RememberSettledLayout();
+                RememberSettledLayout(preserveExitBaselines: expireOwner, carried: new SelectionContext(carriedIds));
 
                 if (LastChangeCount > 0)
                 {
@@ -1094,7 +1202,7 @@ namespace HopperGroup
                     _document.UndoUtil.MergeRecords(recordedGroups.Count + (mergeWithNativeDrag ? 1 : 0));
                 }
 
-                Status = $"Enabled - cached {_groups.Count} group region(s), {LastChangeCount} change(s)";
+                Status = LastChangeCount > 0 ? $"Last: {LastChangeCount} membership update{(LastChangeCount == 1 ? "" : "s")}" : ActiveStatus;
                 Log($"Processed {processedIds.Count} object(s), {LastChangeCount} membership change(s).");
             }
             finally
@@ -1111,15 +1219,16 @@ namespace HopperGroup
         private void RebuildGroupCache()
         {
             _groups.Clear();
-            _parentByChild.Clear();
 
             if (_document == null)
             {
                 return;
             }
 
-            foreach (var group in _document.Objects.OfType<GH_Group>())
+            foreach (var group in BuildObjectIndex(_document.Objects).Values.OfType<GH_Group>())
             {
+                // Locked groups still describe the document's topology and carried
+                // subtrees. Apply the lock only at automatic destinations/mutations.
                 if (TryCreateRegion(group, out var region))
                 {
                     _groups.Add(region);
@@ -1127,9 +1236,11 @@ namespace HopperGroup
             }
 
             _groups.Sort((left, right) => left.Area.CompareTo(right.Area));
-            BuildDesiredGroupHierarchy();
             Log($"Rebuilt group cache with {_groups.Count} group(s).");
         }
+
+        private static bool IsAutoLocked(GH_Group group) =>
+            group.NickName?.IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) >= 0;
 
         private bool TryCreateRegion(GH_Group group, out GroupRegion region)
         {
@@ -1157,50 +1268,11 @@ namespace HopperGroup
             return true;
         }
 
-        private void BuildDesiredGroupHierarchy(
-            Dictionary<Guid, RectangleF> boundsBeforeMove = null,
-            SelectionContext selectionContext = null)
-        {
-            _parentByChild.Clear();
-            var effectiveBounds = _groups.ToDictionary(
-                group => group.Id,
-                group => boundsBeforeMove != null
-                    && !selectionContext.IsCarriedGroup(group.Id)
-                    && boundsBeforeMove.TryGetValue(group.Id, out var previous)
-                        ? previous
-                        : group.Bounds);
-
-            foreach (var child in _groups)
-            {
-                var childBounds = effectiveBounds[child.Id];
-                var childArea = GetArea(childBounds);
-                GroupRegion parent = null;
-                var parentArea = 0f;
-                foreach (var candidate in _groups)
-                {
-                    if (candidate.Id == child.Id) continue;
-                    var bounds = effectiveBounds[candidate.Id];
-                    var area = GetArea(bounds);
-                    if (area > childArea && (parent == null || area < parentArea)
-                        && ContainsRectangle(bounds, childBounds))
-                    {
-                        parent = candidate;
-                        parentArea = area;
-                    }
-                }
-
-                if (parent != null)
-                {
-                    _parentByChild[child.Id] = parent.Id;
-                }
-            }
-        }
-
         private int EnsureNestedGroupHierarchy(HashSet<Guid> recordedGroups, SelectionContext context,
             Dictionary<Guid, RectangleF> boundsBeforeMove, SelectionContext allMovedGroups = null)
         {
             var changes = 0;
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var affectedContext = allMovedGroups ?? context;
             foreach (var child in _groups.Where(group => affectedContext.IsCarriedGroup(group.Id)))
             {
@@ -1217,6 +1289,7 @@ namespace HopperGroup
                 // Internal subtree links travel together. Only roots acquire a new
                 // destination, and an existing descendant can never become a parent.
                 var target = hasCarriedParent ? null : _groups.Where(parent => parent.Id != child.Id
+                        && !IsAutoLocked(parent.Group)
                         && !childContext.IsCarriedGroup(parent.Id)
                         && GetArea(ParentBounds(parent)) > child.Area
                         && ContainsRectangle(ParentBounds(parent), child.Bounds)
@@ -1225,9 +1298,9 @@ namespace HopperGroup
                 var retained = false;
                 foreach (var parent in currentParents)
                 {
-                    if (childContext.IsCarriedGroup(parent.Id) || parent.Id == target?.Id
+                    if (IsAutoLocked(parent.Group) || childContext.IsCarriedGroup(parent.Id) || parent.Id == target?.Id
                         || (GetExitBounds(ParentBounds(parent), child.Bounds).IntersectsWith(child.Bounds)
-                            && (target == null || IsAncestor(target.Id, parent.Id))))
+                            && (target == null || GroupContainsDescendant(target.Group, parent.Id, objectsById))))
                     {
                         retained = true;
                         continue;
@@ -1260,7 +1333,7 @@ namespace HopperGroup
             }
 
             var movedIds = new HashSet<Guid>(movedObjects.Select(obj => obj.InstanceGuid));
-            var objectsById = _document.Objects.ToDictionary(obj => obj.InstanceGuid);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var carriedGroupIds = new HashSet<Guid>();
 
             // A selected group whose entire contents moved is carried by Grasshopper.
@@ -1450,8 +1523,40 @@ namespace HopperGroup
             }
         }
 
+        // Keep the last established outline, including the moving member's original
+        // area. Partial drags never grow it: repeated nudges and one long drag share
+        // an exit boundary, and distant members can move inward or sideways safely.
+        // Carry, membership edits (also in descendants), Refresh, load and undo/redo
+        // establish a new outline. This deliberately preserves empty space after an
+        // inward drag until one of those events; layout-only resizing also waits for
+        // Refresh. State belongs to this manager and is cleared on document changes.
+        private void UpdateExitBaselines(bool reset, SelectionContext carried = null)
+        {
+            var currentIds = new HashSet<Guid>(_groups.Select(group => group.Id));
+            foreach (var id in _exitBaselineBounds.Keys.Where(id => !currentIds.Contains(id)).ToList())
+                _exitBaselineBounds.Remove(id);
+
+            var changedIds = _groups.Where(group => !_settledGroupMembers.TryGetValue(group.Id, out var members)
+                || !members.SetEquals(group.Group.ObjectIDs)).Select(group => group.Id).ToList();
+            var objectsById = BuildObjectIndex(_document.Objects);
+            foreach (var group in _groups)
+            {
+                if (reset || !_exitBaselineBounds.ContainsKey(group.Id)
+                    || (carried != null && carried.IsCarriedGroup(group.Id))
+                    || changedIds.Any(id => id == group.Id || GroupContainsDescendant(group.Group, id, objectsById)))
+                    _exitBaselineBounds[group.Id] = group.Bounds;
+            }
+        }
+
+        private Dictionary<Guid, RectangleF> CreateExitReferences()
+        {
+            UpdateExitBaselines(false);
+            return new Dictionary<Guid, RectangleF>(_exitBaselineBounds);
+        }
+
         private int UpdateObjectMembership(IGH_DocumentObject obj, HashSet<Guid> recordedGroups,
-            SelectionContext selectionContext, SelectionContext destinationContext = null)
+            SelectionContext selectionContext, Dictionary<Guid, RectangleF> exitReferences,
+            SelectionContext destinationContext = null)
         {
             if (!IsManagedObject(obj))
             {
@@ -1459,21 +1564,37 @@ namespace HopperGroup
             }
 
             var center = GetObjectCenter(obj);
-            var target = FindInnermostContainingGroup(center, destinationContext ?? selectionContext);
+            var objectsById = BuildObjectIndex(_document.Objects);
             var currentGroups = _groups
                 .Where(region => region.Group.ObjectIDs.Contains(obj.InstanceGuid))
                 .ToList();
+            RectangleF ExitBounds(GroupRegion region) => GetExitBounds(
+                exitReferences[region.Id], obj.Attributes.Bounds);
+            var protectedGroups = currentGroups.Where(region => !selectionContext.IsCarriedGroup(region.Id)
+                && ExitBounds(region).Contains(center)).ToList();
+            var target = FindInnermostContainingGroup(center, destinationContext ?? selectionContext,
+                // A locked descendant cannot be an automatic destination, but its
+                // leaves still belong to its ancestors indirectly. Do not duplicate
+                // them as direct members when dragging or refreshing that subtree.
+                region => (currentGroups.Contains(region)
+                        || !GroupContainsDescendant(region.Group, obj.InstanceGuid, objectsById))
+                    && (!currentGroups.Contains(region) || selectionContext.IsCarriedGroup(region.Id)
+                        || ExitBounds(region).Contains(center))
+                    // Geometry selects destinations; only explicit, cycle-safe
+                    // membership traversal can grant the descendant exception.
+                    && protectedGroups.All(current => current.Id == region.Id
+                        || GroupContainsDescendant(current.Group, region.Id, objectsById)));
 
             var changes = 0;
             var retainedMembership = false;
 
             foreach (var current in currentGroups)
             {
-                var exitBounds = GetExitBounds(current.Bounds, obj.Attributes.Bounds);
-                if (selectionContext.IsCarriedGroup(current.Id)
+                var exitBounds = ExitBounds(current);
+                if (IsAutoLocked(current.Group) || selectionContext.IsCarriedGroup(current.Id)
                     || (target != null && current.Id == target.Id)
                     || (exitBounds.Contains(center)
-                        && (target == null || IsAncestor(target.Id, current.Id))))
+                        && (target == null || GroupContainsDescendant(target.Group, current.Id, objectsById))))
                 {
                     retainedMembership = true;
                     continue;
@@ -1498,15 +1619,18 @@ namespace HopperGroup
             return changes;
         }
 
-        private GroupRegion FindInnermostContainingGroup(PointF point, SelectionContext selectionContext)
+        private GroupRegion FindInnermostContainingGroup(PointF point, SelectionContext selectionContext,
+            Func<GroupRegion, bool> eligible = null)
         {
             if (!selectionContext.HasCarriedGroups)
             {
-                return _groups.FirstOrDefault(region => region.Bounds.Contains(point));
+                return _groups.FirstOrDefault(region => !IsAutoLocked(region.Group)
+                    && region.Bounds.Contains(point) && (eligible == null || eligible(region)));
             }
 
             // A carried group receives new members at its destination, not its old footprint.
             return _groups
+                .Where(region => !IsAutoLocked(region.Group) && (eligible == null || eligible(region)))
                 .Select(region => selectionContext.IsCarriedGroup(region.Id)
                     ? new GroupRegion(region.Group, GetCurrentGroupBounds(region.Group))
                     : region)
@@ -1515,32 +1639,9 @@ namespace HopperGroup
                 .FirstOrDefault();
         }
 
-        private bool IsAncestor(Guid possibleAncestor, Guid child)
+        private List<IGH_DocumentObject> GetManagedObjects(IEnumerable<IGH_DocumentObject> objects)
         {
-            var current = child;
-            var guard = 0;
-
-            while (_parentByChild.TryGetValue(current, out var parent))
-            {
-                if (parent == possibleAncestor)
-                {
-                    return true;
-                }
-
-                current = parent;
-                guard++;
-                if (guard > _groups.Count)
-                {
-                    return false;
-                }
-            }
-
-            return false;
-        }
-
-        private static List<IGH_DocumentObject> GetManagedObjects(IEnumerable<IGH_DocumentObject> objects)
-        {
-            return objects
+            return BuildObjectIndex(objects).Values
                 .Where(IsManagedObject)
                 .ToList();
         }
@@ -1573,10 +1674,10 @@ namespace HopperGroup
         private RectangleF GetExitBounds(RectangleF groupBounds, RectangleF dragBounds)
         {
             var exitBounds = groupBounds;
-            // Small components need a usable canvas-space buffer too. Keep Exit Scale
-            // as the user's adjustment for both the size-based and minimum distances.
-            exitBounds.Inflate(Math.Max(dragBounds.Width * 1.5f, 40f) * _exitScale,
-                Math.Max(dragBounds.Height * 1.5f, 40f) * _exitScale);
+            // Clamp before scaling so large panels remain easy to remove.
+            float Buffer(float size) => Math.Min(Math.Max(size * ExitSizeMultiplier,
+                MinimumExitBuffer), MaximumExitBuffer) * _exitScale;
+            exitBounds.Inflate(Buffer(dragBounds.Width), Buffer(dragBounds.Height));
             return exitBounds;
         }
 
@@ -1601,6 +1702,63 @@ namespace HopperGroup
             group.ExpireCaches();
         }
 
+        internal void Guard(string where, Action action)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception error)
+            {
+                // Reset before doing any host work: even logging/output refresh can fail
+                // while the document or canvas is being torn down.
+                ClearDragState();
+                ResetGroupTaps();
+                _shortcutObjectIds.Clear();
+                _pendingRemovalUndo = null;
+                _handlingDrop = false;
+                ClearSettledLayout();
+                LastChangeCount = 0;
+                Status = "Error - see Log";
+                ReportError(where, error);
+                try { _owner?.ScheduleOutputRefresh(); }
+                catch (Exception refreshError) { ReportError("Error output refresh", refreshError); }
+            }
+        }
+
+        internal void ReportError(string where, Exception error)
+        {
+            var message = $"{where}: {error.GetType().Name}: {error.Message}";
+            AppendLog(message);
+            if (_reportedErrors.Add(error.GetType().FullName + ": " + error.Message))
+            {
+                try { Rhino.RhinoApp.WriteLine($"[HopperGroup] {message}"); }
+                catch (Exception) { /* The Log output still holds the error if Rhino is unavailable. */ }
+            }
+        }
+
+        private Dictionary<Guid, T> BuildObjectIndex<T>(IEnumerable<T> objects) where T : IGH_DocumentObject
+        {
+            var result = new Dictionary<Guid, T>();
+            foreach (var obj in objects)
+            {
+                if (obj == null) continue;
+                if (result.ContainsKey(obj.InstanceGuid))
+                {
+                    Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
+                    continue;
+                }
+                result.Add(obj.InstanceGuid, obj);
+            }
+            return result;
+        }
+
+        private void AppendLog(string message)
+        {
+            _debugLog.Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] {message}");
+            if (_debugLog.Count > DebugLogLineLimit) _debugLog.Dequeue();
+        }
+
         private void Log(string message)
         {
             if (!_debug)
@@ -1608,9 +1766,7 @@ namespace HopperGroup
                 return;
             }
 
-            var line = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
-            _debugLog.Enqueue(line);
-            if (_debugLog.Count > DebugLogLineLimit) _debugLog.Dequeue();
+            AppendLog(message);
             Rhino.RhinoApp.WriteLine($"[HopperGroup] {message}");
         }
 

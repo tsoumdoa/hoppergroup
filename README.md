@@ -8,11 +8,14 @@ aectooling by tomoS
 
 - Adds moved or newly placed objects to the innermost Grasshopper group whose visual boundary contains the object center.
 - Removes objects from a group only after the object center leaves that group beyond the configured exit buffer.
+- Retains the current group inside its exit zone, even over smaller overlapping groups. Entering a nested child of the current group still transfers membership; after exit, the innermost eligible group wins.
 - Keeps a carried group's members together and preserves nested groups while their individual members change.
 - Keeps surviving contents in the parent group when a nested group is deleted or ungrouped.
 - Adds a dragged group to another group when its whole bounding box fits inside the destination.
-- With objects selected and the canvas focused, tap `G` twice within 650 ms, then click one destination group to add them in one step. Press `Esc` to cancel.
+- With the canvas focused, select exactly one group plus one or more non-group objects and tap `G` twice to add those objects to that group immediately, in one Undo step. Existing members are skipped; a selection already in the group reports `Already in 'Name'`. This explicit command also works with `[lock]` groups.
+- For other selections (no group, only one group, or two or more groups), tap `G` twice, then click anywhere inside the destination group (including a component or empty space). The innermost group under the cursor receives the captured selection. A group-only selection can be nested this way. Press `Esc` to cancel. Both GG flows use the larger of 650 ms and the system double-click interval and show feedback such as `Last: +3 → 'Inputs'`.
 - Provides manual refresh and optional debug logging.
+- Groups with `[lock]` anywhere in their nickname (case-insensitive) opt out: drag, placement, nested-group handling, deletion promotion, and Refresh never edit their membership. They are skipped as automatic destinations, so the next eligible containing group is used, or none. Explicit GG additions can still target them.
 - Marks cached group regions dirty when groups are created or deleted.
 
 ## Compatibility
@@ -37,30 +40,53 @@ The component is available under `Params > Util > Hopper Group`.
 ### Inputs
 
 - `Enabled`: turns the automation on or off. Default: `true`. Grasshopper's own Disable command also stops the automation.
-- `Exit Scale`: multiplier for the removal buffer. At the default `1`, an object must move beyond its group's edge by 1.5 times its size or at least 40 canvas units, whichever is larger. Increase it for a less sensitive exit; set it to `0` for no buffer.
-- `Refresh`: toggle to rescan all groups and repair membership for every canvas object.
+- `Exit Scale`: multiplier for the removal buffer. On each axis the buffer is `min(max(1.5 × object size, 40), 120) × Exit Scale` canvas units. The 40–120 clamp applies before scaling. Increase it for a less sensitive exit; set it to `0` for no buffer. During a member drag, the reference outline uses the group's stationary members with the host's padding, so repeated small drags and one large drag to the same position agree. Carried groups retain their existing behaviour; if no members stay stationary, the drag-start outline is used.
+- `Refresh`: toggle to re-apply membership from the layout, overwriting manual membership edits. Skips `[lock]` groups. `Ctrl+Z` undoes the changes.
 - `Debug`: writes debug messages to Rhino command history and the `Log` output.
 
 ### Outputs
 
-- `Status`: current state and last operation count.
-- `Groups`: number of cached group regions.
+- `Status`: `Active · N groups`, `Off`, or `Inactive (another HopperGroup is active)`, plus feedback from the last operation (for example, `Last: +1 → 'Inputs'`).
+- `Groups`: number of groups being tracked (excluding `[lock]` groups).
 - `Changes`: membership changes from the last operation.
 - `Log`: the most recent 200 debug lines. Rhino command history receives every debug message.
 
-## Build
+## Development
+
+Install the .NET 10 SDK to build the solution and run both executable test suites. The plugin itself also builds with the .NET 9 SDK. The Windows input suite requires Windows and the Windows Desktop runtime; the portable shell scripts/installers work in Git for Windows sh and macOS, but the full gate and release checks need Windows.
 
 ```bash
 dotnet build HopperGroup.csproj
+dotnet build HopperGroup.slnx
+dotnet run --project tests/HopperGroup.RegressionTests
+dotnet run --project tests/HopperGroup.WindowsInputTests
 ```
 
-Build outputs:
+`HopperGroup.slnx` is the single solution and includes the plugin and both test runners. Tests are console programs: use `dotnet run`, not `dotnet test`. SDK 9.0.3xx or newer understands the solution format; building its .NET 10 test projects requires SDK 10.
+
+Plugin build outputs:
 
 - `bin/Debug/net48/HopperGroup.gha`
 - `bin/Debug/net7.0/HopperGroup.gha`
 - `bin/Debug/net7.0-windows/HopperGroup.gha`
 
 Close Rhino before rebuilding if the plugin is loaded.
+
+Install the tracked local pre-commit hook once per clone (Git for Windows includes the required shell):
+
+```bash
+sh scripts/install-hooks.sh
+```
+
+Or from PowerShell:
+
+```powershell
+./scripts/install-hooks.ps1
+```
+
+Both installers set `git config core.hooksPath .githooks`. The hook skips commits with no staged code or tooling changes. It watches `*.cs`, `*.csproj`, `*.sln*`, `Directory.Build.*`, `tests/**`, `.githooks/**`, and `scripts/**`; otherwise it builds every plugin target and runs both test suites. It uses quiet, incremental Debug builds to share normal development outputs and avoid a second Release build cache. Restore stays enabled so fresh clones work. It prints elapsed time and failure details.
+
+The hook checks the working tree without stashing or changing the index, so partially staged edits and untracked work remain safe. If unstaged or untracked code/tooling exists, it warns that the staged code may differ from what was tested. Stage the intended changes and rerun when that distinction matters. To run it manually, use `sh .githooks/pre-commit`; to bypass a gate when necessary, use `git commit --no-verify`. These are local quality gates; no CI is configured.
 
 ## Release / Yak Packaging
 
@@ -70,13 +96,21 @@ Create a local Yak package with:
 ./scripts/release-yak.sh 0.2.8
 ```
 
-The script first runs the regression checks using the .NET 10 SDK. If they pass, it updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`.
+Run the Bash release script on Windows (Git Bash) with the .NET 10 SDK. It first runs both the regression and Windows input checks. If they pass, it updates `HopperGroup.csproj` and `yak/manifest.yml`, builds all Release targets, stages the Rhino 8 multi-target package under `artifacts/yak/stage/`, and writes the final `.yak` package to `artifacts/yak/`. Failures restore the source versions until a push succeeds; a failed test-server search after publishing keeps the published version.
 
 If this is your first Yak publish from this machine, log in first:
 
 ```bash
 "/Applications/Rhino 8.app/Contents/Resources/bin/yak" login
 ```
+
+On Windows, use PowerShell:
+
+```powershell
+& "C:\Program Files\Rhino 8\System\Yak.exe" login
+```
+
+The release script finds `yak` on PATH or in the default Rhino 8 macOS/Windows location. Set `YAK_BIN` to override the executable path.
 
 To rehearse publishing on McNeel's daily-wiped test server:
 
@@ -110,6 +144,8 @@ Disabling the component, either through `Enabled` or Grasshopper's Disable comma
 
 Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history, including when membership is added with GG. Both GG additions and drag destinations reject nesting a group inside its own descendant.
 
+GG adds direct membership without removing any existing membership. Selecting a parent group and a component already in its nested child adds the component directly to the parent as well; the child and its membership stay intact. Instant GG and click-destination GG share this behaviour and the same membership Undo action.
+
 When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Clicking a newly grouped selection preserves its manual memberships even over overlapping groups. New ungrouped objects still join the group at their placement point. Refresh after a manual addition establishes the boundary for later individual moves.
 
 Run the isolated membership regression checks with the .NET 10 SDK:
@@ -121,6 +157,8 @@ dotnet run --project tests/HopperGroup.RegressionTests -c Release
 These checks compile the production manager against a simulated canvas, group geometry, undo-record server, and completed undo/redo notifications. Group deletion checks replay simulated removal and membership actions in host order; other undo/redo scenarios restore positions and memberships explicitly before raising the host event. Live Grasshopper canvas interaction and undo/redo restoration still require host verification.
 
 On Windows, GG intercepts keys on the focused Grasshopper canvas before the editor can forward them to Rhino. It consumes both taps and their translated characters, requires physical releases between taps, and leaves text fields, modified keys, native canvas interactions, and reserved navigation/menu bindings available to the host. Multiple enabled HopperGroup components share one shortcut owner. Document changes, focus changes, other keys, mouse clicks, and wheel events reset incomplete gestures. Non-Windows builds retain the managed canvas key callbacks.
+
+A lone `G` with a selection is also consumed. It is not replayed after the tap window: Rhino's `SendKeystrokes` targets its current command line rather than the original Grasshopper key context, and delayed input could reach a different command or focus state. With no selection, `G` is left to the host.
 
 Run the Windows input checks with the .NET 10 SDK on Windows:
 

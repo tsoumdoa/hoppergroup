@@ -8,10 +8,11 @@ using Grasshopper.GUI.Canvas;
 using HopperGroup;
 
 // Minimal host doubles. Group rectangles follow member rectangles, as in Grasshopper.
-// These tests exercise the unchanged manager source, not a replacement algorithm.
+// These tests compile the real manager and component sources against host doubles.
 #if !REAL_WINFORMS
 namespace System.Windows.Forms
 {
+    public static class SystemInformation { public static int DoubleClickTime = 500; }
     public enum MouseButtons { Left, Right }
     [Flags]
     public enum Keys { None = 0, Escape = 27, G = 71, H = 72, F6 = 117, Shift = 65536, Control = 131072, Alt = 262144 }
@@ -44,11 +45,21 @@ namespace Grasshopper
     public static class Instances
     {
         public static GH_Canvas ActiveCanvas;
-        public static void InvalidateCanvas() { }
+        public static Exception InvalidateError;
+        public static void InvalidateCanvas()
+        {
+            if (InvalidateError != null) throw InvalidateError;
+        }
     }
 }
 namespace Grasshopper.GUI.Canvas
 {
+    public class GH_Viewport
+    {
+        public float Zoom = 1;
+        public PointF Offset;
+        public PointF UnprojectPoint(PointF point) => new((point.X - Offset.X) / Zoom, (point.Y - Offset.Y) / Zoom);
+    }
     public class GH_CanvasDocumentChangedEventArgs : EventArgs
     {
         public GH_Document OldDocument, NewDocument;
@@ -56,6 +67,7 @@ namespace Grasshopper.GUI.Canvas
 #if !REAL_WINFORMS
     public class GH_Canvas
     {
+        public GH_Viewport Viewport { get; } = new();
         public static System.Windows.Forms.Keys NavigationPanLeft, NavigationPanRight,
             NavigationPanUp, NavigationPanDown, NavigationZoomIn, NavigationZoomOut;
         public bool ModifiersEnabled { get; set; } = true;
@@ -79,9 +91,9 @@ namespace Grasshopper.GUI.Canvas
             DocumentChanged?.Invoke(this, new GH_CanvasDocumentChangedEventArgs { OldDocument = previous, NewDocument = document });
         }
         public void Wheel() => MouseWheel?.Invoke(this, new System.Windows.Forms.MouseEventArgs());
-        public void Down() => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
+        public void Down(Point? location = null) => MouseDown?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = location ?? new Point(0, 0) });
         public void Up() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(100, 0) });
-        public void ClickUp() => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = new Point(0, 0) });
+        public void ClickUp(Point? location = null) => MouseUp?.Invoke(this, new System.Windows.Forms.MouseEventArgs { Location = location ?? new Point(0, 0) });
         public System.Windows.Forms.KeyEventArgs Press(System.Windows.Forms.Keys key, System.Windows.Forms.Keys modifiers = System.Windows.Forms.Keys.None)
         {
             var args = new System.Windows.Forms.KeyEventArgs { KeyCode = key, Modifiers = modifiers };
@@ -98,6 +110,16 @@ namespace Grasshopper.GUI.Canvas
 }
 namespace Grasshopper.Kernel
 {
+    public abstract class GH_AssemblyInfo
+    {
+        public virtual string Name => "";
+        public virtual Bitmap Icon => null;
+        public virtual Guid Id => Guid.Empty;
+        public virtual string Description => "";
+        public virtual string AuthorName => "";
+        public virtual string AuthorContact => "";
+        public virtual string AssemblyVersion => "";
+    }
     public class Attributes
     {
         private RectangleF bounds;
@@ -132,14 +154,14 @@ namespace Grasshopper.Kernel
     {
         public Guid InstanceGuid
         {
-            get;
+            get; set;
         } = Guid.NewGuid();
         public Attributes Attributes
         {
             get;
         } = new Attributes();
         public string Name => "object";
-        public string NickName => Name;
+        public string NickName { get; set; } = "object";
         public Obj(float x = 0, float y = 0)
         {
             Attributes.Pivot = new PointF(x, y);
@@ -197,6 +219,17 @@ namespace Grasshopper.Kernel
         {
             UndoUtil = new(UndoServer);
         }
+        public Exception ScheduleError;
+        public int ScheduleCount;
+        public bool DeferSolutions;
+        public readonly Queue<Action<GH_Document>> ScheduledSolutions = new();
+        public void ScheduleSolution(int delay, Action<GH_Document> callback)
+        {
+            if (ScheduleError != null) throw ScheduleError;
+            ScheduleCount++;
+            if (DeferSolutions) ScheduledSolutions.Enqueue(callback);
+            else callback(this);
+        }
         public bool IsModified;
         public event EventHandler<GH_DocObjectEventArgs> ObjectsAdded, ObjectsDeleted;
         public event EventHandler<GH_DocUndoEventArgs> UndoStateChanged;
@@ -205,10 +238,16 @@ namespace Grasshopper.Kernel
         // Tests restore the recorded layout first, matching the host's completed Undo/Redo event.
         public void RaiseUndoStateChanged(GH_UndoOperation operation) =>
             UndoStateChanged?.Invoke(this, new GH_DocUndoEventArgs { Operation = operation });
-        public List<IGH_DocumentObject> SelectedObjects() => Selection;
+        public Exception SelectionError;
+        public List<IGH_DocumentObject> SelectedObjects()
+        {
+            if (SelectionError != null) throw SelectionError;
+            return Selection;
+        }
         public void Add(IGH_DocumentObject obj)
         {
             Objects.Add(obj);
+            if (obj is GH_Component component) component.AddedToDocument(this);
             ObjectsAdded?.Invoke(this, new GH_DocObjectEventArgs { Objects = new() { obj } });
         }
         public void Delete(IGH_DocumentObject obj)
@@ -218,7 +257,11 @@ namespace Grasshopper.Kernel
         public void Delete(IEnumerable<IGH_DocumentObject> objects)
         {
             var deleted = objects.Where(Objects.Contains).ToList();
-            foreach (var obj in deleted) Objects.Remove(obj);
+            foreach (var obj in deleted)
+            {
+                Objects.Remove(obj);
+                if (obj is GH_Component component) component.RemovedFromDocument(this);
+            }
             ObjectsDeleted?.Invoke(this, new GH_DocObjectEventArgs { Objects = deleted });
         }
         public Grasshopper.Kernel.Undo.GH_UndoRecord DeleteWithUndo(string name, params IGH_DocumentObject[] objects)
@@ -330,8 +373,49 @@ namespace HopperGroup
             Action<System.Windows.Forms.Keys, bool> dispatch, Action reset) => null;
     }
 #endif
-    public class HopperGroupComponent : Obj
+}
+namespace Rhino
+{
+    public static class RhinoApp
     {
+        public static readonly List<string> Lines = new();
+        public static void WriteLine(string s) { Lines.Add(s); }
+    }
+}
+
+#if !REAL_WINFORMS
+namespace System.Drawing
+{
+    public class Bitmap
+    {
+        public Bitmap(System.IO.Stream stream) { }
+    }
+}
+#endif
+namespace Grasshopper.Kernel
+{
+    public enum GH_DocumentContext { Unknown, None, Open, Close, Loaded, Unloaded, Lock, Unlock }
+    public enum GH_ParamAccess { item }
+    public enum GH_RuntimeMessageLevel { Remark }
+    public interface IGH_DataAccess
+    {
+        bool GetData<T>(int index, ref T value);
+        void SetData(int index, object value);
+    }
+    public class GH_Component : Obj
+    {
+        public class GH_InputParamManager
+        {
+            public void AddBooleanParameter(string name, string nick, string description, GH_ParamAccess access, bool value) { }
+            public void AddNumberParameter(string name, string nick, string description, GH_ParamAccess access, double value) { }
+        }
+        public class GH_OutputParamManager
+        {
+            public void AddTextParameter(string name, string nick, string description, GH_ParamAccess access) { }
+            public void AddIntegerParameter(string name, string nick, string description, GH_ParamAccess access) { }
+        }
+        public GH_Component(string name, string nick, string description, string category, string subcategory) { }
+        private GH_Document document;
         private bool locked;
         public event Action<IGH_DocumentObject, GH_ObjectChangedEventArgs> ObjectChanged;
         public bool Locked
@@ -345,10 +429,38 @@ namespace HopperGroup
             }
         }
         public int RefreshCount;
-        public Func<string> ShortcutPromptProvider;
-        public string Message { get; private set; } = string.Empty;
-        public void UpdateShortcutPrompt() { Message = ShortcutPromptProvider?.Invoke() ?? string.Empty; }
-        public void ScheduleOutputRefresh() { UpdateShortcutPrompt(); RefreshCount++; }
+        public Exception ExpireError;
+        public string Message { get; set; } = string.Empty;
+        public List<string> RuntimeMessages = new();
+        public void ClearRuntimeMessages() => RuntimeMessages.Clear();
+        public void AddRuntimeMessage(GH_RuntimeMessageLevel level, string message) => RuntimeMessages.Add(message);
+        public void ExpireSolution(bool recompute)
+        {
+            if (ExpireError != null) throw ExpireError;
+            RefreshCount++;
+        }
+        public GH_Document OnPingDocument() => document;
+        public virtual void AddedToDocument(GH_Document value) { document = value; }
+        public virtual void RemovedFromDocument(GH_Document value) { document = null; }
+        public virtual void DocumentContextChanged(GH_Document value, GH_DocumentContext context) { }
+        protected virtual void RegisterInputParams(GH_InputParamManager manager) { }
+        protected virtual void RegisterOutputParams(GH_OutputParamManager manager) { }
+        protected virtual void SolveInstance(IGH_DataAccess data) { }
+        protected virtual Bitmap Icon => null;
+        public virtual Guid ComponentGuid => Guid.Empty;
+        public void Solve(IGH_DataAccess data) { ClearRuntimeMessages(); SolveInstance(data); }
+    }
+    public class DataAccess : IGH_DataAccess
+    {
+        public bool Enabled = true, Refresh, Debug;
+        public double ExitScale = 1;
+        public readonly Dictionary<int, object> Outputs = new();
+        public bool GetData<T>(int index, ref T value)
+        {
+            object input = index == 0 ? Enabled : index == 1 ? ExitScale : index == 2 ? Refresh : Debug;
+            value = (T)input;
+            return true;
+        }
+        public void SetData(int index, object value) { Outputs[index] = value; }
     }
 }
-namespace Rhino { public static class RhinoApp { public static void WriteLine(string s) { } } }

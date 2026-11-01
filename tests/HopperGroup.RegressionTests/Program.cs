@@ -55,6 +55,8 @@ class Program
     }
     static void Main()
     {
+        PolicyTests.Run(Check);
+        RobustnessTests.Run(Check);
         Check("Deleting a nested group promotes its components to its direct parent", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -1250,6 +1252,7 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, true);
             m.Configure(owner, d, false, 1, true);
             var log = m.DebugLog;
@@ -1267,12 +1270,13 @@ class Program
                 && d.UndoServer.UndoCount == 0 && !d.IsModified, "disabled manager edited memberships or undo history");
             Assert(g.CacheExpirations == cacheExpirations && m.DebugLog == log && owner.RefreshCount == 0,
                 "disabled manager scanned groups, logged, or recomputed its owner");
-            Assert(m.LastChangeCount == 0 && m.Status == "Disabled", "disabled status retained old changes");
+            Assert(m.LastChangeCount == 0 && m.Status == "Off", "disabled status retained old changes");
         });
         Check("Grasshopper Disable stops an in-progress drag and unlock uses the current layout", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, false);
             c.Down();
             owner.Locked = true;
@@ -1302,6 +1306,7 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, false, 1, false);
             owner.Locked = true;
             owner.Locked = false;
@@ -1314,6 +1319,7 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, false);
             m.Dispose();
             owner.Locked = true; owner.Locked = false;
@@ -1431,7 +1437,7 @@ class Program
             Assert(!c.Press(System.Windows.Forms.Keys.G).Handled, "G with no selection was intercepted");
             c.Release(System.Windows.Forms.Keys.G);
             d.Selection.Add(o); c.GG();
-            d.Selection.Clear(); c.Down(); c.ClickUp();
+            d.Selection.Clear(); c.Down(new Point(9999, 9999)); c.ClickUp(new Point(9999, 9999));
             Assert(m.ShortcutPrompt == string.Empty && m.Status.Contains("cancelled")
                 && d.UndoServer.UndoCount == 0, "missed destination left stale feedback or changed membership");
         });
@@ -1468,7 +1474,8 @@ class Program
         {
             var (d, c, m, g, a, b, o) = Setup();
             var second = new Obj(1100); d.Add(second);
-            var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+            var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, false);
             d.Selection.Add(o); d.Selection.Add(second); c.GG();
             Assert(owner.Message.Contains("Add 2 object(s)"), "arming GG did not display the captured count");
@@ -1483,7 +1490,8 @@ class Program
         Check("Deleting the last captured GG object cancels its status and visible prompt", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
-            var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+            var owner = new HopperGroupComponent();
+            m.Dispose(); m = owner.Manager;
             m.Configure(owner, d, true, 1, false);
             d.Selection.Add(o); c.GG(); d.Delete(o);
             Assert(m.ShortcutPrompt == string.Empty && owner.Message == string.Empty
@@ -1499,7 +1507,8 @@ class Program
             Check($"{operation} clears the visible GG prompt", () =>
             {
                 var (d, c, m, g, a, b, o) = Setup();
-                var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+                var owner = new HopperGroupComponent();
+                m.Dispose(); m = owner.Manager;
                 m.Configure(owner, d, true, 1, false);
                 d.Selection.Add(o); c.GG();
                 Assert(owner.Message != string.Empty, "GG was not visibly armed before the undo notification");
@@ -1514,7 +1523,8 @@ class Program
             Check($"Disabling clears the GG prompt without solving its owner (host Disable: {hostDisable})", () =>
             {
                 var (d, c, m, g, a, b, o) = Setup();
-                var owner = new HopperGroupComponent { ShortcutPromptProvider = () => m.ShortcutPrompt };
+                var owner = new HopperGroupComponent();
+                m.Dispose(); m = owner.Manager;
                 m.Configure(owner, d, true, 1, false);
                 d.Selection.Add(o); c.GG();
                 var refreshCount = owner.RefreshCount;
@@ -1565,20 +1575,20 @@ class Program
             d.Selection.Add(g);
             c.GG();
             d.Selection.Clear(); d.Selection.Add(child);
-            c.Down(); c.ClickUp();
+            c.Down(new Point(1005, 5)); c.ClickUp(new Point(1005, 5));
             Assert(!child.ObjectIDs.Contains(g.InstanceGuid) && m.LastChangeCount == 0,
                 "GG created a cyclic group hierarchy");
         });
         foreach (var reconcileOnDrop in new[] { false, true })
         {
-            Check(reconcileOnDrop ? "GG preserves pending moves through an unrelated native drag"
+            Check(reconcileOnDrop ? "GG preserves pending moves and a new member's original exit area during native drag"
                 : "GG preserves unrelated pending external moves", () =>
             {
                 var (d, c, m, g, a, b, o) = Setup();
                 var target = AddGroup(d, new Obj(2000), new Obj(2060));
                 a.Move(500);
                 d.Selection.Add(o); c.GG();
-                d.Selection.Clear(); d.Selection.Add(target); c.Down(); c.ClickUp();
+                d.Selection.Clear(); d.Selection.Add(target); c.Down(new Point(2035, 5)); c.ClickUp(new Point(2035, 5));
                 Assert(target.ObjectIDs.Contains(o.InstanceGuid) && m.LastChangeCount == 1,
                     "GG did not add the captured object");
                 if (reconcileOnDrop) { d.Selection.Clear(); d.Selection.Add(o); c.Down(); o.Move(5); c.Up(); }
@@ -1612,7 +1622,8 @@ class Program
             var added = new Obj(20); d.Add(added);
             a.Move(500);
             d.Selection.Add(added); c.GG();
-            d.Selection.Clear(); d.Selection.Add(child); c.Down(); c.ClickUp();
+            d.Selection.Clear(); d.Selection.Add(child); c.Down(new Point(35, 5)); c.ClickUp(new Point(35, 5));
+            Assert(child.ObjectIDs.Contains(added.InstanceGuid) && m.LastChangeCount == 1, "GG missed the child destination");
             m.RefreshAllObjects();
             Assert(!child.ObjectIDs.Contains(a.InstanceGuid) && child.ObjectIDs.Contains(added.InstanceGuid)
                 && child.ObjectIDs.Contains(sibling.InstanceGuid) && g.ObjectIDs.Contains(child.InstanceGuid),
@@ -1632,15 +1643,15 @@ class Program
             Assert(!g.ObjectIDs.Contains(root.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
                 && leaf.ObjectIDs.Contains(o.InstanceGuid), "subtree exit damaged internal links");
         });
-        Check("GG rejects a deep cycle while still adding valid selected objects", () =>
+        Check("Ambiguous GG selection rejects deep cycles while still adding valid selected objects", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var leaf = AddGroup(d, o);
             var middle = AddGroup(d, leaf);
             g.AddObject(middle.InstanceGuid);
             var added = new Obj(1030); d.Add(added);
-            d.Selection.Add(g); d.Selection.Add(added); c.GG();
-            d.Selection.Clear(); d.Selection.Add(leaf); c.Down(); c.ClickUp();
+            d.Selection.Add(g); d.Selection.Add(middle); d.Selection.Add(added); c.GG();
+            d.Selection.Clear(); d.Selection.Add(leaf); c.Down(new Point(1005, 5)); c.ClickUp(new Point(1005, 5));
             Assert(!leaf.ObjectIDs.Contains(g.InstanceGuid) && leaf.ObjectIDs.Contains(added.InstanceGuid)
                 && middle.ObjectIDs.Contains(leaf.InstanceGuid) && g.ObjectIDs.Contains(middle.InstanceGuid)
                 && m.LastChangeCount == 1, "deep cycle was accepted or valid addition was lost");

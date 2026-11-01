@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using Grasshopper;
 using Grasshopper.GUI.Canvas;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Special;
 using HopperGroup;
 
 internal static class Program
@@ -76,6 +77,95 @@ internal static class Program
 
     private static void RunTests(Form form)
     {
+        Check(form, "Queued GG adds a component and selected locked group instantly in one undo", f =>
+        {
+            var anchor = new Obj(100); f.Document.Add(anchor);
+            var group = new GH_Group(f.Document) { NickName = "Inputs [lock]" };
+            group.AddObject(anchor.InstanceGuid); f.Document.Add(group); f.Document.Selection.Add(group);
+            QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+            Assert(group.ObjectIDs.Contains(f.Object.InstanceGuid) && f.Manager.ShortcutPrompt == ""
+                && f.Manager.Status == "Last: +1 → 'Inputs [lock]'" && f.Manager.LastChangeCount == 1
+                && f.Document.UndoServer.UndoNames.Count == 1 && f.Document.UndoServer.UndoNames[0] == "HopperGroup membership"
+                && f.ForwardedKeys == 0 && f.Characters == 0, "native GG did not add instantly with normal undo and feedback");
+        });
+        Check(form, "Queued GG with only a selected group still arms", f =>
+        {
+            var group = new GH_Group(f.Document); group.AddObject(f.Object.InstanceGuid); f.Document.Add(group);
+            f.Document.Selection.Clear(); f.Document.Selection.Add(group);
+            QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+            Assert(f.Manager.ShortcutPrompt.Length > 0 && f.Document.UndoServer.UndoCount == 0,
+                "group-only GG no longer arms");
+        });
+        Check(form, "Queued GG with two groups and a component still arms", f =>
+        {
+            var first = new GH_Group(f.Document); first.AddObject(f.Object.InstanceGuid); f.Document.Add(first);
+            var second = new GH_Group(f.Document); f.Document.Add(second);
+            f.Document.Selection.Add(first); f.Document.Selection.Add(second);
+            QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+            Assert(f.Manager.ShortcutPrompt.Contains("Add 3 object(s)") && f.Document.UndoServer.UndoCount == 0,
+                "ambiguous GG chose an instant target");
+        });
+        Check(form, "Queued instant GG reports already-member selections without arming", f =>
+        {
+            var group = new GH_Group(f.Document) { NickName = "Inputs" };
+            group.AddObject(f.Object.InstanceGuid); f.Document.Add(group); f.Document.Selection.Add(group);
+            QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+            Assert(f.Manager.Status == "Already in 'Inputs'" && f.Manager.ShortcutPrompt == ""
+                && f.Manager.LastChangeCount == 0 && f.Document.UndoServer.UndoCount == 0,
+                "already-member GG armed or changed membership");
+        });
+        Check(form, "Plugin metadata returns the embedded 24x24 bitmap with independent lifetime", f =>
+        {
+            var info = new HopperGroupInfo();
+            Assert(typeof(HopperGroupInfo).Assembly.GetManifestResourceInfo("HopperGroup.icon.png") != null,
+                "plugin icon resource name is incorrect");
+            using var icon = info.Icon;
+            Assert(icon != null && icon.Width == 24 && icon.Height == 24, "assembly icon is missing or not 24x24");
+            using var copy = new Bitmap(icon);
+            Assert(copy.GetPixel(12, 12) == icon.GetPixel(12, 12), "bitmap cannot be used after its source stream closes");
+        });
+        Check(form, "Plugin metadata has a stable nonempty assembly GUID", f =>
+        {
+            Assert(new HopperGroupInfo().Id != Guid.Empty && new HopperGroupInfo().Id == new HopperGroupInfo().Id,
+                "assembly identity is missing or changes per instance");
+        });
+        foreach (var overComponent in new[] { false, true })
+        {
+            Check(form, $"Native GG resolves a locked inner destination over {(overComponent ? "a component" : "empty space")}", f =>
+            {
+                var member = new Obj(100); f.Document.Add(member);
+                var child = new GH_Group(f.Document) { NickName = "Inputs [lock]" };
+                child.AddObject(member.InstanceGuid); f.Document.Add(child);
+                var far = new Obj(200); f.Document.Add(far);
+                var parent = new GH_Group(f.Document); parent.AddObject(child.InstanceGuid);
+                parent.AddObject(far.InstanceGuid); f.Document.Add(parent);
+                QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+                f.Document.Selection.Clear(); if (overComponent) f.Document.Selection.Add(member);
+                f.Canvas.Viewport.Zoom = 2; f.Canvas.Viewport.Offset = new PointF(10, 20);
+                f.Canvas.ClickAt(overComponent ? new Point(220, 30) : new Point(208, 30));
+                Assert(child.ObjectIDs.Contains(f.Object.InstanceGuid) && !parent.ObjectIDs.Contains(f.Object.InstanceGuid)
+                    && f.Manager.ShortcutPrompt.Length == 0 && f.Document.UndoServer.UndoCount == 1,
+                    "native GG did not resolve the clicked inner group");
+            });
+        }
+        Check(form, "Queued GG uses an injected system double-click interval above 650ms", f =>
+        {
+            f.TapWindow = 1000;
+            Tap(f.Canvas, Keys.G); f.Timestamp = System.Diagnostics.Stopwatch.Frequency * 8 / 10;
+            Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.ShortcutPrompt.Length > 0 && f.ForwardedKeys == 0 && f.Characters == 0,
+                "native routing ignored the system tap window");
+        });
+        Check(form, "A lone queued G is consumed and a late next G starts a fresh gesture", f =>
+        {
+            f.TapWindow = 200;
+            Tap(f.Canvas, Keys.G); f.Timestamp = System.Diagnostics.Stopwatch.Frequency;
+            Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.ShortcutPrompt.Length == 0 && f.ForwardedKeys == 0 && f.Characters == 0,
+                "expired first tap was replayed or armed GG");
+            Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.ShortcutPrompt.Length > 0, "next quick tap did not finish the new gesture");
+        });
         Check(form, "Baseline KeyPreview consumes G before canvas KeyDown", f =>
         {
             f.Manager.Configure(null, f.Document, false, 1, false);
@@ -267,6 +357,56 @@ internal static class Program
             f.Manager.Dispose(); Tap(f.Canvas, Keys.G);
             Assert(f.ForwardedKeys == 1 && f.Characters == 1, "disposed hook kept consuming G");
         });
+        Check(form, "Document sessions transfer native shortcuts and unload removes the HWND registration", f =>
+        {
+            f.Manager.Dispose();
+            var first = new HopperGroupComponent();
+            var second = new HopperGroupComponent();
+            f.Document.Add(first); f.Document.Add(second);
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(first.Manager.ShortcutPrompt.Length > 0 && second.Manager.ShortcutPrompt.Length == 0
+                && f.Document.HandlerCount == 3, "sessions duplicated native shortcut work");
+            first.Locked = true;
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(second.Manager.ShortcutPrompt.Length > 0 && first.Manager.ShortcutPrompt.Length == 0,
+                "native shortcut did not transfer to the successor");
+            second.DocumentContextChanged(f.Document, GH_DocumentContext.Unloaded);
+            Assert(f.Document.HandlerCount == 0, "unload retained document handlers");
+            var forwarded = f.ForwardedKeys;
+            Tap(f.Canvas, Keys.G);
+            Assert(f.ForwardedKeys == forwarded + 1, "unload kept the HWND shortcut registered");
+            first.Locked = false;
+            first.DocumentContextChanged(f.Document, GH_DocumentContext.Loaded);
+            second.DocumentContextChanged(f.Document, GH_DocumentContext.Loaded);
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(first.Manager.ShortcutPrompt.Length > 0 && second.Manager.ShortcutPrompt.Length == 0
+                && f.Document.HandlerCount == 3, "reload failed to reattach one native owner");
+            first.DocumentContextChanged(f.Document, GH_DocumentContext.Close);
+        });
+        Check(form, "Native eligibility exceptions are contained and GG can recover", f =>
+        {
+            f.Document.SelectionError = new InvalidOperationException("Injected native shortcut eligibility failure");
+            Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.DebugLog.Contains("CanCaptureShortcut"), "native eligibility callback escaped its guard");
+            f.Document.SelectionError = null;
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(f.Manager.ShortcutPrompt.Length > 0, "native shortcut did not recover");
+        });
+        Check(form, "Native dispatch exceptions reset the physical tap and allow fresh GG", f =>
+        {
+            f.Manager.Dispose();
+            var fail = true;
+            using var manager = new GroupMembershipManager(() => fail
+                ? throw new InvalidOperationException("Injected native shortcut dispatch failure")
+                : System.Diagnostics.Stopwatch.GetTimestamp());
+            manager.Configure(null, f.Document, true, 1, false);
+            Tap(f.Canvas, Keys.G);
+            Assert(manager.DebugLog.Contains("DispatchNativeShortcut") && manager.ShortcutPrompt.Length == 0,
+                "native dispatch failure escaped or left a pending shortcut");
+            fail = false;
+            Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
+            Assert(manager.ShortcutPrompt.Length > 0, "dispatch failure prevented fresh native taps");
+        });
     }
 
     private sealed class Fixture : IDisposable
@@ -274,7 +414,9 @@ internal static class Program
         internal readonly GH_Document Document = new GH_Document();
         internal readonly Obj Object = new Obj();
         internal readonly GH_Canvas Canvas;
-        internal readonly GroupMembershipManager Manager = new GroupMembershipManager(() => 0);
+        internal readonly GroupMembershipManager Manager;
+        internal long Timestamp;
+        internal int TapWindow = SystemInformation.DoubleClickTime;
         internal int ForwardedKeys, Characters;
         private readonly Form _form;
         private readonly KeyEventHandler _keyHandler;
@@ -282,6 +424,7 @@ internal static class Program
 
         internal Fixture(Form form)
         {
+            Manager = new GroupMembershipManager(() => Timestamp, () => TapWindow);
             _form = form;
             Canvas = new GH_Canvas { Document = Document, Location = new Point(5, 30), Size = new Size(300, 200) };
             Document.Add(Object); Document.Selection.Add(Object); Instances.ActiveCanvas = Canvas;
