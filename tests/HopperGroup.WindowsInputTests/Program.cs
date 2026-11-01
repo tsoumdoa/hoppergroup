@@ -77,6 +77,43 @@ internal static class Program
 
     private static void RunTests(Form form)
     {
+        Check(form, "Queued GG adds a component and selected locked group instantly in one undo", f =>
+        {
+            var anchor = new Obj(100); f.Document.Add(anchor);
+            var group = new GH_Group(f.Document) { NickName = "Inputs [lock]" };
+            group.AddObject(anchor.InstanceGuid); f.Document.Add(group); f.Document.Selection.Add(group);
+            QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+            Assert(group.ObjectIDs.Contains(f.Object.InstanceGuid) && f.Manager.ShortcutPrompt == ""
+                && f.Manager.Status == "Last: +1 → 'Inputs [lock]'" && f.Manager.LastChangeCount == 1
+                && f.Document.UndoServer.UndoNames.Count == 1 && f.Document.UndoServer.UndoNames[0] == "HopperGroup membership"
+                && f.ForwardedKeys == 0 && f.Characters == 0, "native GG did not add instantly with normal undo and feedback");
+        });
+        Check(form, "Queued GG with only a selected group still arms", f =>
+        {
+            var group = new GH_Group(f.Document); group.AddObject(f.Object.InstanceGuid); f.Document.Add(group);
+            f.Document.Selection.Clear(); f.Document.Selection.Add(group);
+            QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+            Assert(f.Manager.ShortcutPrompt.Length > 0 && f.Document.UndoServer.UndoCount == 0,
+                "group-only GG no longer arms");
+        });
+        Check(form, "Queued GG with two groups and a component still arms", f =>
+        {
+            var first = new GH_Group(f.Document); first.AddObject(f.Object.InstanceGuid); f.Document.Add(first);
+            var second = new GH_Group(f.Document); f.Document.Add(second);
+            f.Document.Selection.Add(first); f.Document.Selection.Add(second);
+            QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+            Assert(f.Manager.ShortcutPrompt.Contains("Add 3 object(s)") && f.Document.UndoServer.UndoCount == 0,
+                "ambiguous GG chose an instant target");
+        });
+        Check(form, "Queued instant GG reports already-member selections without arming", f =>
+        {
+            var group = new GH_Group(f.Document) { NickName = "Inputs" };
+            group.AddObject(f.Object.InstanceGuid); f.Document.Add(group); f.Document.Selection.Add(group);
+            QueueTap(f.Canvas, Keys.G); QueueTap(f.Canvas, Keys.G); Application.DoEvents();
+            Assert(f.Manager.Status == "Already in 'Inputs'" && f.Manager.ShortcutPrompt == ""
+                && f.Manager.LastChangeCount == 0 && f.Document.UndoServer.UndoCount == 0,
+                "already-member GG armed or changed membership");
+        });
         Check(form, "Plugin metadata returns the embedded 24x24 bitmap with independent lifetime", f =>
         {
             var info = new HopperGroupInfo();

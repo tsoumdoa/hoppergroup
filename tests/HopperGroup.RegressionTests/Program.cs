@@ -1643,14 +1643,14 @@ class Program
             Assert(!g.ObjectIDs.Contains(root.InstanceGuid) && root.ObjectIDs.Contains(leaf.InstanceGuid)
                 && leaf.ObjectIDs.Contains(o.InstanceGuid), "subtree exit damaged internal links");
         });
-        Check("GG rejects a deep cycle while still adding valid selected objects", () =>
+        Check("Ambiguous GG selection rejects deep cycles while still adding valid selected objects", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
             var leaf = AddGroup(d, o);
             var middle = AddGroup(d, leaf);
             g.AddObject(middle.InstanceGuid);
             var added = new Obj(1030); d.Add(added);
-            d.Selection.Add(g); d.Selection.Add(added); c.GG();
+            d.Selection.Add(g); d.Selection.Add(middle); d.Selection.Add(added); c.GG();
             d.Selection.Clear(); d.Selection.Add(leaf); c.Down(new Point(1005, 5)); c.ClickUp(new Point(1005, 5));
             Assert(!leaf.ObjectIDs.Contains(g.InstanceGuid) && leaf.ObjectIDs.Contains(added.InstanceGuid)
                 && middle.ObjectIDs.Contains(leaf.InstanceGuid) && g.ObjectIDs.Contains(middle.InstanceGuid)

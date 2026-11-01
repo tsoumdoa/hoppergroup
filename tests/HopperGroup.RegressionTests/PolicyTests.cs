@@ -46,6 +46,56 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        foreach (var locked in new[] { false, true })
+        {
+            check($"GG instantly adds a mixed selection to its single selected group (locked: {locked})", () =>
+            {
+                using var f = new Fixture();
+                var existing = new Obj(0); var group = f.Group(existing); group.NickName = locked ? "Inputs [lock]" : "Inputs";
+                var added = new Obj(500); var scribble = new GH_Scribble(600);
+                f.Document.Add(added); f.Document.Add(scribble); f.Start();
+                f.Document.Selection.AddRange(new IGH_DocumentObject[] { group, existing, added, scribble }); f.Canvas.GG();
+                Assert(group.ObjectIDs.Count == 3 && group.ObjectIDs.Contains(added.InstanceGuid)
+                    && group.ObjectIDs.Contains(scribble.InstanceGuid) && f.Manager.ShortcutPrompt == "",
+                    "mixed GG selection did not add immediately");
+                Assert(f.Manager.LastChangeCount == 2 && f.Manager.Status == $"Last: +2 → '{group.NickName}'"
+                    && f.Document.UndoServer.UndoNames.SequenceEqual(new[] { "HopperGroup membership" }),
+                    "instant GG did not reuse click feedback and a single membership undo");
+            });
+        }
+        check("GG with only one selected group still arms destination nesting", () =>
+        {
+            using var f = new Fixture(); var group = f.Group(new Obj()); f.Start();
+            f.Document.Selection.Add(group); f.Canvas.GG();
+            Assert(f.Manager.ShortcutPrompt.Length > 0 && f.Document.UndoServer.UndoCount == 0
+                && !group.ObjectIDs.Contains(group.InstanceGuid), "group-only GG stopped arming or added itself");
+        });
+        check("GG with two selected groups and a component still arms the ambiguous selection", () =>
+        {
+            using var f = new Fixture(); var a = f.Group(new Obj()); var b = f.Group(new Obj(100));
+            var component = new Obj(500); f.Document.Add(component); f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { a, b, component }); f.Canvas.GG();
+            Assert(f.Manager.ShortcutPrompt.Contains("Add 3 object(s)") && f.Document.UndoServer.UndoCount == 0
+                && !a.ObjectIDs.Contains(component.InstanceGuid) && !b.ObjectIDs.Contains(component.InstanceGuid),
+                "ambiguous GG chose a group automatically");
+        });
+        check("Instant GG reports already-member selections without an undo record", () =>
+        {
+            using var f = new Fixture(); var member = new Obj(); var group = f.Group(member); group.NickName = "Inputs"; f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { group, member }); f.Canvas.GG();
+            Assert(f.Manager.ShortcutPrompt == "" && f.Manager.Status == "Already in 'Inputs'"
+                && f.Manager.LastChangeCount == 0 && f.Document.UndoServer.UndoCount == 0 && !f.Document.IsModified,
+                "already-member GG armed or reported a change");
+        });
+        check("Instant GG matches additive click semantics for a component in a nested child", () =>
+        {
+            using var f = new Fixture(); var member = new Obj(); var child = f.Group(member);
+            var parent = f.Group(child); f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { parent, member }); f.Canvas.GG();
+            Assert(parent.ObjectIDs.Contains(member.InstanceGuid) && parent.ObjectIDs.Contains(child.InstanceGuid)
+                && child.ObjectIDs.Contains(member.InstanceGuid) && !child.ObjectIDs.Contains(parent.InstanceGuid)
+                && f.Manager.ShortcutPrompt == "", "instant GG flattened or cycled a nested group");
+        });
         check("Output changes coalesce while a refresh solution is pending", () =>
         {
             using var f = new Fixture();

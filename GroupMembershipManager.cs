@@ -679,7 +679,16 @@ namespace HopperGroup
             _firstGroupTapTimestamp = null;
 
             var groups = selected.OfType<GH_Group>().ToList();
-            if (groups.Count == 1 && _shortcutObjectIds.Count > 0)
+            var nonGroups = selected.Where(obj => obj != null && obj != _owner && !(obj is GH_Group)).ToList();
+            if (groups.Count == 1 && nonGroups.Count > 0)
+            {
+                // A single selected group supplies an explicit destination. Use
+                // exactly the same additive membership/undo path as a GG click.
+                _shortcutObjectIds.Clear();
+                foreach (var obj in nonGroups) _shortcutObjectIds.Add(obj.InstanceGuid);
+                AddShortcutSelection(groups[0]);
+            }
+            else if (groups.Count == 1 && _shortcutObjectIds.Count > 0)
             {
                 AddShortcutSelection(groups[0]);
             }

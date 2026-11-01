@@ -28,7 +28,7 @@ namespace HopperGroup
             : base(
                 "Hopper Group",
                 "HopperGroup",
-                "Automatically adds dragged Grasshopper objects to the group region they occupy. Select objects and tap G twice, then click a destination group to add them manually. Esc cancels.",
+                "Automatically manages group membership on canvas drags. Select one group plus objects and tap G twice to add them immediately. Otherwise, select objects, tap G twice, then click inside a destination group. Esc cancels.",
                 "Params",
                 "Util")
         {

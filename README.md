@@ -12,7 +12,8 @@ aectooling by tomoS
 - Keeps a carried group's members together and preserves nested groups while their individual members change.
 - Keeps surviving contents in the parent group when a nested group is deleted or ungrouped.
 - Adds a dragged group to another group when its whole bounding box fits inside the destination.
-- With objects selected and the canvas focused, tap `G` twice within the larger of 650 ms and the system double-click interval, then click anywhere inside the destination group (including a component or empty space). The innermost group under the cursor receives the objects in one step. Press `Esc` to cancel.
+- With the canvas focused, select exactly one group plus one or more non-group objects and tap `G` twice to add those objects to that group immediately, in one Undo step. Existing members are skipped; a selection already in the group reports `Already in 'Name'`. This explicit command also works with `[lock]` groups.
+- For other selections (no group, only one group, or two or more groups), tap `G` twice, then click anywhere inside the destination group (including a component or empty space). The innermost group under the cursor receives the captured selection. A group-only selection can be nested this way. Press `Esc` to cancel. Both GG flows use the larger of 650 ms and the system double-click interval and show feedback such as `Last: +3 → 'Inputs'`.
 - Provides manual refresh and optional debug logging.
 - Groups with `[lock]` anywhere in their nickname (case-insensitive) opt out: drag, placement, nested-group handling, deletion promotion, and Refresh never edit their membership. They are skipped as automatic destinations, so the next eligible containing group is used, or none. Explicit GG additions can still target them.
 - Marks cached group regions dirty when groups are created or deleted.
@@ -142,6 +143,8 @@ When an external group move is followed by a member drag, the drag uses the grou
 Disabling the component, either through `Enabled` or Grasshopper's Disable command, detaches the canvas and document handlers. Movement, placement, Refresh, and undo/redo do not trigger membership work while disabled. Re-enabling captures the current layout without replaying moves made while disabled.
 
 Manual additions and removals update the boundaries used for pending external moves, including nested groups. Adding a member at a group's destination after a coherent external move keeps the original members together. Existing members are checked against the revised boundary at their settled positions so a large move can still leave the group. Unrelated groups retain their pending movement history, including when membership is added with GG. Both GG additions and drag destinations reject nesting a group inside its own descendant.
+
+GG adds direct membership without removing any existing membership. Selecting a parent group and a component already in its nested child adds the component directly to the parent as well; the child and its membership stay intact. Instant GG and click-destination GG share this behaviour and the same membership Undo action.
 
 When a new object is manually grouped before the next Refresh or canvas drop, that membership uses its current position unless every member of the group moved together. Clicking a newly grouped selection preserves its manual memberships even over overlapping groups. New ungrouped objects still join the group at their placement point. Refresh after a manual addition establishes the boundary for later individual moves.
 
