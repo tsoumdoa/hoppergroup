@@ -41,7 +41,7 @@ internal static class PolicyTests
         {
             Canvas.Down(); obj.Move(distance); Canvas.Up();
         }
-        public void Dispose() { Manager.Dispose(); Instances.ActiveCanvas = null; }
+        public void Dispose() { Manager.Dispose(); Instances.ActiveCanvas = null; System.Windows.Forms.Control.MousePosition = System.Windows.Forms.Control.Hidden; }
     }
 
     internal static void Run(Action<string, Action> check)
@@ -257,7 +257,7 @@ internal static class PolicyTests
             Assert(f.Manager.ShortcutPrompt.Length > 0 && f.Document.UndoServer.UndoCount == 0
                 && !group.ObjectIDs.Contains(group.InstanceGuid), "group-only GG stopped arming or added itself");
         });
-        check("GG with two selected groups and a component still arms the ambiguous selection", () =>
+        check("GG with two selected groups and no hovered group still arms the ambiguous selection", () =>
         {
             using var f = new Fixture(); var a = f.Group(new Obj()); var b = f.Group(new Obj(100));
             var component = new Obj(500); f.Document.Add(component); f.Start();
@@ -265,6 +265,38 @@ internal static class PolicyTests
             Assert(f.Manager.ShortcutPrompt.Contains("Add 3 object(s)") && f.Document.UndoServer.UndoCount == 0
                 && !a.ObjectIDs.Contains(component.InstanceGuid) && !b.ObjectIDs.Contains(component.InstanceGuid),
                 "ambiguous GG chose a group automatically");
+        });
+        check("GG with several selected groups adds the rest to the group under the cursor", () =>
+        {
+            using var f = new Fixture(); var nested = f.Group(new Obj(0)); nested.NickName = "Nested";
+            var destination = f.Group(new Obj(300), new Obj(400)); destination.NickName = "Target";
+            var component = new Obj(800); f.Document.Add(component); f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { component, nested, destination });
+            System.Windows.Forms.Control.MousePosition = new Point(350, 5); f.Canvas.GG();
+            Assert(destination.ObjectIDs.Contains(component.InstanceGuid) && destination.ObjectIDs.Contains(nested.InstanceGuid)
+                && !nested.ObjectIDs.Contains(destination.InstanceGuid) && f.Manager.ShortcutPrompt == ""
+                && f.Manager.Status == "Last: +2 → 'Target'"
+                && f.Document.UndoServer.UndoNames.SequenceEqual(new[] { "HopperGroup membership" }),
+                "hovered GG did not nest the selection into the destination in one undo step");
+        });
+        check("Hovered GG prefers the innermost selected group and never cycles", () =>
+        {
+            using var f = new Fixture(); var member = new Obj(50); var child = f.Group(member, new Obj(80));
+            var parent = f.Group(child, new Obj(-50, -50), new Obj(150, 50));
+            var component = new Obj(800); f.Document.Add(component); f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { parent, child, component });
+            System.Windows.Forms.Control.MousePosition = new Point(55, 5); f.Canvas.GG();
+            Assert(child.ObjectIDs.Contains(component.InstanceGuid) && !child.ObjectIDs.Contains(parent.InstanceGuid)
+                && !parent.ObjectIDs.Contains(component.InstanceGuid), "hovered GG chose the outer group or cycled");
+        });
+        check("Hovering an unselected group does not resolve an ambiguous GG", () =>
+        {
+            using var f = new Fixture(); var a = f.Group(new Obj()); var b = f.Group(new Obj(100));
+            var other = f.Group(new Obj(300)); var component = new Obj(500); f.Document.Add(component); f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { a, b, component });
+            System.Windows.Forms.Control.MousePosition = new Point(305, 5); f.Canvas.GG();
+            Assert(f.Manager.ShortcutPrompt.Contains("Add 3 object(s)") && !other.ObjectIDs.Contains(component.InstanceGuid),
+                "unselected hovered group became the destination");
         });
         check("Instant GG reports already-member selections without an undo record", () =>
         {

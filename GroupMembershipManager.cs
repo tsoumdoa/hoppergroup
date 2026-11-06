@@ -691,6 +691,17 @@ namespace HopperGroup
             {
                 AddShortcutSelection(groups[0]);
             }
+            else if (groups.Count > 1 && FindHoveredGroup(groups) is GH_Group hovered)
+            {
+                // Several selected groups are ambiguous; the one under the cursor
+                // at the second tap is the destination for everything else.
+                _shortcutObjectIds.Clear();
+                foreach (var obj in selected.Where(obj => obj != null && obj != _owner && obj != hovered))
+                {
+                    _shortcutObjectIds.Add(obj.InstanceGuid);
+                }
+                AddShortcutSelection(hovered);
+            }
             else
             {
                 _shortcutObjectIds.Clear();
@@ -703,6 +714,18 @@ namespace HopperGroup
                     : PendingShortcutStatus;
                 _owner?.ScheduleOutputRefresh();
             }
+        }
+
+        private GH_Group FindHoveredGroup(IEnumerable<GH_Group> candidates)
+        {
+            var client = _canvas.PointToClient(Control.MousePosition);
+            if (!_canvas.ClientRectangle.Contains(client)) return null;
+            var point = _canvas.Viewport.UnprojectPoint(client);
+            // Innermost wins, as for a destination click.
+            return candidates
+                .Select(group => TryCreateRegion(group, out var region) ? region : null)
+                .Where(region => region != null && region.Bounds.Contains(point))
+                .OrderBy(region => region.Area).Select(region => region.Group).FirstOrDefault();
         }
 
         private void OnCanvasKeyUp(object sender, KeyEventArgs e) =>
