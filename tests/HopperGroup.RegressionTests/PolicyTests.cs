@@ -23,6 +23,7 @@ internal static class PolicyTests
         {
             Canvas = new GH_Canvas { Document = Document };
             Instances.ActiveCanvas = Canvas;
+            System.Windows.Forms.Control.MousePosition = System.Windows.Forms.Control.Hidden;
             Manager = new GroupMembershipManager(timestamp);
         }
         internal GH_Group Group(params IGH_DocumentObject[] members)
@@ -288,6 +289,28 @@ internal static class PolicyTests
             System.Windows.Forms.Control.MousePosition = new Point(55, 5); f.Canvas.GG();
             Assert(child.ObjectIDs.Contains(component.InstanceGuid) && !child.ObjectIDs.Contains(parent.InstanceGuid)
                 && !parent.ObjectIDs.Contains(component.InstanceGuid), "hovered GG chose the outer group or cycled");
+        });
+        check("Hovered GG maps screen, zoom and pan to canvas coordinates", () =>
+        {
+            using var f = new Fixture(); var a = f.Group(new Obj(0)); var b = f.Group(new Obj(300));
+            var component = new Obj(800); f.Document.Add(component); f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { a, b, component });
+            f.Canvas.ScreenOrigin = new Point(1000, 500); f.Canvas.ClientRectangle = new Rectangle(0, 0, 800, 600);
+            f.Canvas.Viewport.Zoom = 2; f.Canvas.Viewport.Offset = new PointF(100, 200);
+            // Canvas (305, 5) -> client (710, 210) -> screen (1710, 710); canvas (5, 5) would be screen (1110, 710).
+            System.Windows.Forms.Control.MousePosition = new Point(1710, 710); f.Canvas.GG();
+            Assert(b.ObjectIDs.Contains(component.InstanceGuid) && b.ObjectIDs.Contains(a.InstanceGuid)
+                && !a.ObjectIDs.Contains(component.InstanceGuid), "hovered GG ignored screen offset, zoom or pan");
+        });
+        check("Hovered GG ignores a cursor outside the canvas even over an off-screen group", () =>
+        {
+            using var f = new Fixture(); var a = f.Group(new Obj(0)); var b = f.Group(new Obj(300));
+            var component = new Obj(800); f.Document.Add(component); f.Start();
+            f.Document.Selection.AddRange(new IGH_DocumentObject[] { a, b, component });
+            f.Canvas.ClientRectangle = new Rectangle(0, 0, 200, 200);
+            System.Windows.Forms.Control.MousePosition = new Point(305, 5); f.Canvas.GG();
+            Assert(f.Manager.ShortcutPrompt.Contains("Add 3 object(s)") && !b.ObjectIDs.Contains(component.InstanceGuid),
+                "cursor outside the canvas chose a destination");
         });
         check("Hovering an unselected group does not resolve an ambiguous GG", () =>
         {
