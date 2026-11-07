@@ -13,6 +13,8 @@ using HopperGroup;
 namespace System.Windows.Forms
 {
     public static class SystemInformation { public static int DoubleClickTime = 500; }
+    // Screen coordinates map to canvas client coordinates through GH_Canvas.ScreenOrigin.
+    public static class Control { public static readonly Point Hidden = new(-100000, -100000); public static Point MousePosition = Hidden; }
     public enum MouseButtons { Left, Right }
     [Flags]
     public enum Keys { None = 0, Escape = 27, G = 71, H = 72, F6 = 117, Shift = 65536, Control = 131072, Alt = 262144 }
@@ -68,6 +70,9 @@ namespace Grasshopper.GUI.Canvas
     public class GH_Canvas
     {
         public GH_Viewport Viewport { get; } = new();
+        public Rectangle ClientRectangle { get; set; } = new(-10000, -10000, 20000, 20000);
+        public Point ScreenOrigin { get; set; }
+        public Point PointToClient(Point screen) => new(screen.X - ScreenOrigin.X, screen.Y - ScreenOrigin.Y);
         public static System.Windows.Forms.Keys NavigationPanLeft, NavigationPanRight,
             NavigationPanUp, NavigationPanDown, NavigationZoomIn, NavigationZoomOut;
         public bool ModifiersEnabled { get; set; } = true;

@@ -691,6 +691,17 @@ namespace HopperGroup
             {
                 AddShortcutSelection(groups[0]);
             }
+            else if (groups.Count > 1 && FindHoveredGroup(groups) is GH_Group hovered)
+            {
+                // Several selected groups are ambiguous; the one under the cursor
+                // at the second tap is the destination for everything else.
+                _shortcutObjectIds.Clear();
+                foreach (var obj in selected.Where(obj => obj != null && obj != _owner && obj != hovered))
+                {
+                    _shortcutObjectIds.Add(obj.InstanceGuid);
+                }
+                AddShortcutSelection(hovered);
+            }
             else
             {
                 _shortcutObjectIds.Clear();
@@ -703,6 +714,18 @@ namespace HopperGroup
                     : PendingShortcutStatus;
                 _owner?.ScheduleOutputRefresh();
             }
+        }
+
+        private GH_Group FindHoveredGroup(IEnumerable<GH_Group> candidates)
+        {
+            var client = _canvas.PointToClient(Control.MousePosition);
+            if (!_canvas.ClientRectangle.Contains(client)) return null;
+            var point = _canvas.Viewport.UnprojectPoint(client);
+            // Innermost wins, as for a destination click.
+            return candidates
+                .Select(group => TryCreateRegion(group, out var region) ? region : null)
+                .Where(region => region != null && region.Bounds.Contains(point))
+                .OrderBy(region => region.Area).Select(region => region.Group).FirstOrDefault();
         }
 
         private void OnCanvasKeyUp(object sender, KeyEventArgs e) =>
@@ -784,7 +807,7 @@ namespace HopperGroup
             string.IsNullOrWhiteSpace(group.NickName) ? "Group" : group.NickName;
 
         private static bool GroupContainsDescendant(GH_Group group, Guid id,
-            Dictionary<Guid, IGH_DocumentObject> objectsById)
+            Dictionary<Guid, IGH_DocumentObject> objectsById, Func<GH_Group, bool> holds = null)
         {
             var visited = new HashSet<Guid>();
             var pending = new Stack<GH_Group>();
@@ -793,7 +816,7 @@ namespace HopperGroup
             {
                 var current = pending.Pop();
                 if (!visited.Add(current.InstanceGuid)) continue;
-                if (current.ObjectIDs.Contains(id)) return true;
+                if (current.ObjectIDs.Contains(id) && (holds == null || holds(current))) return true;
                 foreach (var memberId in current.ObjectIDs)
                 {
                     if (objectsById.TryGetValue(memberId, out var member) && member is GH_Group child)
@@ -1572,12 +1595,18 @@ namespace HopperGroup
                 exitReferences[region.Id], obj.Attributes.Bounds);
             var protectedGroups = currentGroups.Where(region => !selectionContext.IsCarriedGroup(region.Id)
                 && ExitBounds(region).Contains(center)).ToList();
+            // Groups the object certainly leaves. An ancestor that reaches the
+            // object only through them no longer holds it, so it may receive it.
+            var departing = new HashSet<Guid>(currentGroups.Where(region => !IsAutoLocked(region.Group)
+                && !selectionContext.IsCarriedGroup(region.Id) && !ExitBounds(region).Contains(center))
+                .Select(region => region.Id));
             var target = FindInnermostContainingGroup(center, destinationContext ?? selectionContext,
                 // A locked descendant cannot be an automatic destination, but its
                 // leaves still belong to its ancestors indirectly. Do not duplicate
                 // them as direct members when dragging or refreshing that subtree.
                 region => (currentGroups.Contains(region)
-                        || !GroupContainsDescendant(region.Group, obj.InstanceGuid, objectsById))
+                        || !GroupContainsDescendant(region.Group, obj.InstanceGuid, objectsById,
+                            holder => !departing.Contains(holder.InstanceGuid)))
                     && (!currentGroups.Contains(region) || selectionContext.IsCarriedGroup(region.Id)
                         || ExitBounds(region).Contains(center))
                     // Geometry selects destinations; only explicit, cycle-safe
