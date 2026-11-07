@@ -255,6 +255,12 @@ namespace Grasshopper.Kernel
             if (obj is GH_Component component) component.AddedToDocument(this);
             ObjectsAdded?.Invoke(this, new GH_DocObjectEventArgs { Objects = new() { obj } });
         }
+        // One ObjectsAdded notification for several objects, as for a paste.
+        public void AddBatch(params IGH_DocumentObject[] objects)
+        {
+            Objects.AddRange(objects);
+            ObjectsAdded?.Invoke(this, new GH_DocObjectEventArgs { Objects = objects.ToList() });
+        }
         public void Delete(IGH_DocumentObject obj)
         {
             Delete(new[] { obj });
@@ -391,9 +397,11 @@ namespace Rhino
 #if !REAL_WINFORMS
 namespace System.Drawing
 {
-    public class Bitmap
+    public class Bitmap : IDisposable
     {
         public Bitmap(System.IO.Stream stream) { }
+        public Bitmap(Bitmap source) { }
+        public void Dispose() { }
     }
 }
 #endif

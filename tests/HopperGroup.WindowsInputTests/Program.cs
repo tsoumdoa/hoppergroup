@@ -114,15 +114,32 @@ internal static class Program
                 && f.Manager.LastChangeCount == 0 && f.Document.UndoServer.UndoCount == 0,
                 "already-member GG armed or changed membership");
         });
-        Check(form, "Plugin metadata returns the embedded 24x24 bitmap with independent lifetime", f =>
+        Check(form, "Plugin and component icons return the embedded 24x24 bitmap with independent lifetime", f =>
         {
             var info = new HopperGroupInfo();
             Assert(typeof(HopperGroupInfo).Assembly.GetManifestResourceInfo("HopperGroup.icon.png") != null,
                 "plugin icon resource name is incorrect");
             using var icon = info.Icon;
-            Assert(icon != null && icon.Width == 24 && icon.Height == 24, "assembly icon is missing or not 24x24");
+            Assert(icon != null, "assembly icon is missing");
+            Assert(icon.Width == 24 && icon.Height == 24, $"assembly icon size: expected 24x24, actual {icon.Width}x{icon.Height}");
             using var copy = new Bitmap(icon);
             Assert(copy.GetPixel(12, 12) == icon.GetPixel(12, 12), "bitmap cannot be used after its source stream closes");
+            // The getter has returned and disposed its resource stream; the image must stay usable.
+            using var componentIcon = new IconProbe().ComponentIcon;
+            Assert(componentIcon != null, "component icon is missing");
+            Assert(componentIcon.Width == 24 && componentIcon.Height == 24,
+                $"component icon size: expected 24x24, actual {componentIcon.Width}x{componentIcon.Height}");
+            for (var y = 0; y < 24; y += 6)
+            {
+                for (var x = 0; x < 24; x += 6)
+                {
+                    Assert(componentIcon.GetPixel(x, y) == icon.GetPixel(x, y),
+                        $"component icon pixel ({x}, {y}): expected {icon.GetPixel(x, y)}, actual {componentIcon.GetPixel(x, y)}");
+                }
+            }
+            using var componentCopy = new Bitmap(componentIcon);
+            Assert(componentCopy.GetPixel(12, 12) == componentIcon.GetPixel(12, 12),
+                "component bitmap cannot be copied after its source stream closes");
         });
         Check(form, "Plugin metadata has a stable nonempty assembly GUID", f =>
         {
@@ -407,6 +424,11 @@ internal static class Program
             Tap(f.Canvas, Keys.G); Tap(f.Canvas, Keys.G);
             Assert(manager.ShortcutPrompt.Length > 0, "dispatch failure prevented fresh native taps");
         });
+    }
+
+    private sealed class IconProbe : HopperGroupComponent
+    {
+        internal Bitmap ComponentIcon => Icon;
     }
 
     private sealed class Fixture : IDisposable
