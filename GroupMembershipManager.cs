@@ -21,6 +21,16 @@ namespace HopperGroup
         private const float MinimumExitBuffer = 40f;
         private const float MaximumExitBuffer = 120f;
         private const int MinimumGroupTapWindowMilliseconds = 650;
+        private const float DefaultExitScale = 1f;
+        private const float MaximumExitScale = 1000f;
+        // Grasshopper's undo record name for a canvas drag. Membership records merge
+        // into it only when BOTH hold: the gesture added exactly one undo record, and
+        // the latest record has exactly (ordinally) this name.
+        private const string NativeDragUndoName = "Drag";
+        // Nickname token that opts a group out of automatic membership changes. It is
+        // matched case-insensitively anywhere in the nickname. It does not block
+        // explicit GG additions.
+        private const string AutoLockToken = "[lock]";
         internal const int DebugLogLineLimit = 200;
         private readonly Func<long> _shortcutTimestamp;
         private readonly Func<int> _doubleClickTime;
@@ -45,9 +55,11 @@ namespace HopperGroup
         private bool _documentSubscribed;
         private readonly HashSet<string> _reportedErrors = new HashSet<string>();
         private bool _enabled;
-        private bool _requestedEnabled;
         private bool _debug;
         private bool _handlingDrop;
+        // Bumped on every ObjectsAdded/ObjectsDeleted so an index built during a pass
+        // is rebuilt if a host callback changes the document mid-pass.
+        private int _documentGeneration;
         private bool _hasMouseDownSnapshot;
         private bool _hasSettledLayout;
         private Point _mouseDownLocation;
@@ -80,21 +92,13 @@ namespace HopperGroup
         {
             var wasEnabled = _enabled;
             var documentChanged = _document != document;
-            if (_owner != owner)
-            {
-                if (_owner != null)
-                {
-                    _owner.ObjectChanged -= OnOwnerChanged;
-                }
-                _owner = owner;
-                if (_owner != null)
-                {
-                    _owner.ObjectChanged += OnOwnerChanged;
-                }
-            }
-            _requestedEnabled = enabled;
+            // Enabled/Locked changes after this call reach the manager only through the
+            // owning component (OnComponentChanged -> DocumentSessionRegistry), so an
+            // owner must be registered there. The Locked check below covers the state
+            // at configuration time for any caller.
+            _owner = owner;
             _enabled = enabled && document != null && (_owner == null || !_owner.Locked);
-            _exitScale = Math.Max(0f, exitScale);
+            _exitScale = NormalizeExitScale(exitScale);
             _debug = debug;
 
             if (documentChanged)
@@ -139,6 +143,15 @@ namespace HopperGroup
             Guard("UpdateShortcutPrompt", () => _owner?.UpdateShortcutPrompt());
         }
 
+        // One policy for both the component input and direct configuration: an invalid
+        // number falls back to the default, and the scale is clamped so exit bounds stay
+        // finite. NaN or infinite bounds would fail every containment check.
+        internal static float NormalizeExitScale(double value)
+        {
+            if (double.IsNaN(value)) return DefaultExitScale;
+            return (float)Math.Min(Math.Max(value, 0.0), MaximumExitScale);
+        }
+
         public void RefreshAllObjects() =>
             Guard("RefreshAllObjects", () => RefreshAllObjectsCore());
 
@@ -161,7 +174,6 @@ namespace HopperGroup
         private void DisposeCore()
         {
             _enabled = false;
-            _requestedEnabled = false;
             try
             {
                 UnwireCanvas();
@@ -172,26 +184,8 @@ namespace HopperGroup
                 _groups.Clear();
                 ClearDragState();
                 ClearSettledLayout();
-                if (_owner != null)
-                {
-                    _owner.ObjectChanged -= OnOwnerChanged;
-                    _owner = null;
-                }
+                _owner = null;
                 _document = null;
-            }
-        }
-
-        private void OnOwnerChanged(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e) =>
-            Guard("OnOwnerChanged", () => OnOwnerChangedCore(sender, e));
-
-        private void OnOwnerChangedCore(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e)
-        {
-            // Grasshopper does not solve a locked component, so its own Disable
-            // command must stop the event handlers without waiting for SolveInstance.
-            if (_owner != null && e.Type == GH_ObjectEventType.Enabled)
-            {
-                Configure(_owner, _document, _requestedEnabled, _exitScale, _debug);
-                if (_enabled) _owner?.ScheduleOutputRefresh();
             }
         }
 
@@ -308,14 +302,18 @@ namespace HopperGroup
 
         private void OnObjectsAddedCore(object sender, GH_DocObjectEventArgs e)
         {
+            _documentGeneration++;
             if (!_enabled)
             {
                 return;
             }
 
+            // One quiet index per batch; each rejected event object is logged below.
+            var objectsById = BuildObjectIndex(_document.Objects, logDuplicates: false);
             foreach (var obj in e.Objects.Where(obj => obj != null && !(obj is GH_Group)))
             {
-                if (!ReferenceEquals(_document.Objects.FirstOrDefault(existing => existing.InstanceGuid == obj.InstanceGuid), obj))
+                // Keep only the first document object with this id (by reference).
+                if (!objectsById.TryGetValue(obj.InstanceGuid, out var first) || !ReferenceEquals(first, obj))
                 {
                     Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
                     continue;
@@ -336,6 +334,7 @@ namespace HopperGroup
 
         private void OnObjectsDeletedCore(object sender, GH_DocObjectEventArgs e)
         {
+            _documentGeneration++;
             if (!_enabled)
             {
                 return;
@@ -560,7 +559,7 @@ namespace HopperGroup
                 .ToList();
             var nativeDragWasRecorded = _hasMouseDownSnapshot
                 && _document.UndoServer.UndoCount == _undoCountAtMouseDown + 1
-                && _document.UndoServer.UndoNames.FirstOrDefault() == "Drag";
+                && _document.UndoServer.UndoNames.FirstOrDefault() == NativeDragUndoName;
             var pendingExternalIds = new HashSet<Guid>(managedObjects
                 .Where(obj => _settledObjectPositions.TryGetValue(obj.InstanceGuid, out var settled)
                     && settled != (_positionsAtMouseDown.TryGetValue(obj.InstanceGuid, out var atMouseDown)
@@ -1114,6 +1113,21 @@ namespace HopperGroup
                 selectionContext = selectionContext ?? SelectionContext.Empty;
                 var carriedIds = new HashSet<Guid>(_groups.Where(group => selectionContext.IsCarriedGroup(group.Id))
                     .Select(group => group.Id));
+                // A pass edits memberships, so one id-to-object index serves both phases
+                // and membership queries stay live. Undo recording raises host events,
+                // and a subscriber could add or replace objects mid-pass: rebuild the
+                // index whenever the document generation has moved on.
+                Dictionary<Guid, IGH_DocumentObject> objectsById = null;
+                var indexGeneration = 0;
+                Dictionary<Guid, IGH_DocumentObject> ObjectIndex()
+                {
+                    if (objectsById == null || indexGeneration != _documentGeneration)
+                    {
+                        objectsById = BuildObjectIndex(_document.Objects);
+                        indexGeneration = _documentGeneration;
+                    }
+                    return objectsById;
+                }
 
                 if (reconcileExternalMoves && _hasSettledLayout)
                 {
@@ -1166,7 +1180,7 @@ namespace HopperGroup
                             var memberContext = externalSnapshot != null && nativeMovedIds.Contains(obj.InstanceGuid)
                                 ? selectionContext
                                 : combinedContext;
-                            LastChangeCount += UpdateObjectMembership(obj, recordedGroups, memberContext,
+                            LastChangeCount += UpdateObjectMembership(obj, ObjectIndex(), recordedGroups, memberContext,
                                 settledExitReferences, destinationContext);
                         }
 
@@ -1197,7 +1211,8 @@ namespace HopperGroup
                 var gestureExitReferences = CreateExitReferences();
                 foreach (var obj in objects)
                 {
-                    LastChangeCount += UpdateObjectMembership(obj, recordedGroups, selectionContext, gestureExitReferences);
+                    LastChangeCount += UpdateObjectMembership(obj, ObjectIndex(), recordedGroups, selectionContext,
+                        gestureExitReferences);
                 }
 
                 if (selectionContext.HasCarriedGroups)
@@ -1263,7 +1278,7 @@ namespace HopperGroup
         }
 
         private static bool IsAutoLocked(GH_Group group) =>
-            group.NickName?.IndexOf("[lock]", StringComparison.OrdinalIgnoreCase) >= 0;
+            group.NickName?.IndexOf(AutoLockToken, StringComparison.OrdinalIgnoreCase) >= 0;
 
         private bool TryCreateRegion(GH_Group group, out GroupRegion region)
         {
@@ -1577,8 +1592,8 @@ namespace HopperGroup
             return new Dictionary<Guid, RectangleF>(_exitBaselineBounds);
         }
 
-        private int UpdateObjectMembership(IGH_DocumentObject obj, HashSet<Guid> recordedGroups,
-            SelectionContext selectionContext, Dictionary<Guid, RectangleF> exitReferences,
+        private int UpdateObjectMembership(IGH_DocumentObject obj, Dictionary<Guid, IGH_DocumentObject> objectsById,
+            HashSet<Guid> recordedGroups, SelectionContext selectionContext, Dictionary<Guid, RectangleF> exitReferences,
             SelectionContext destinationContext = null)
         {
             if (!IsManagedObject(obj))
@@ -1587,7 +1602,6 @@ namespace HopperGroup
             }
 
             var center = GetObjectCenter(obj);
-            var objectsById = BuildObjectIndex(_document.Objects);
             var currentGroups = _groups
                 .Where(region => region.Group.ObjectIDs.Contains(obj.InstanceGuid))
                 .ToList();
@@ -1766,7 +1780,8 @@ namespace HopperGroup
             }
         }
 
-        private Dictionary<Guid, T> BuildObjectIndex<T>(IEnumerable<T> objects) where T : IGH_DocumentObject
+        private Dictionary<Guid, T> BuildObjectIndex<T>(IEnumerable<T> objects, bool logDuplicates = true)
+            where T : IGH_DocumentObject
         {
             var result = new Dictionary<Guid, T>();
             foreach (var obj in objects)
@@ -1774,7 +1789,7 @@ namespace HopperGroup
                 if (obj == null) continue;
                 if (result.ContainsKey(obj.InstanceGuid))
                 {
-                    Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
+                    if (logDuplicates) Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
                     continue;
                 }
                 result.Add(obj.InstanceGuid, obj);

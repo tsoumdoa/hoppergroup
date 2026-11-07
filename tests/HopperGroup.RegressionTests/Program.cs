@@ -10,6 +10,10 @@ using HopperGroup;
 class Program
 {
     static int failures;
+    sealed class IconProbe : HopperGroupComponent
+    {
+        internal Bitmap ComponentIcon => Icon;
+    }
     static void Check(string name, Action action)
     {
         try
@@ -38,6 +42,17 @@ class Program
         document.Add(group);
         return group;
     }
+    // Registers a real component through the document lifecycle (AddedToDocument and
+    // the session registry), away from the fixture's groups, and returns its manager.
+    static HopperGroupComponent AddOwner(GH_Document document, ref GroupMembershipManager manager, bool locked = false)
+    {
+        manager.Dispose();
+        var owner = new HopperGroupComponent { Locked = locked };
+        owner.Move(5000);
+        document.Add(owner);
+        manager = owner.Manager;
+        return owner;
+    }
     static (GH_Document, GH_Canvas, GroupMembershipManager, GH_Group, Obj, Obj, Obj) Setup(bool scribbleMember = false, Func<long> shortcutTimestamp = null)
     {
         var d = new GH_Document();
@@ -57,6 +72,11 @@ class Program
     {
         PolicyTests.Run(Check);
         RobustnessTests.Run(Check);
+        Check("Component icon is null when the embedded resource is missing", () =>
+        {
+            // This suite does not embed icon.png; the Windows input suite covers the bitmap itself.
+            Assert(new IconProbe().ComponentIcon == null, "component icon was not null without its resource");
+        });
         Check("Deleting a nested group promotes its components to its direct parent", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -414,6 +434,39 @@ class Program
             c.Down(); o.Move(500); c.Up();
             Assert(!child.ObjectIDs.Contains(o.InstanceGuid),
                 "an unselected member was mistaken for a selected majority");
+        });
+        foreach (var (label, scale) in new[] { ("NaN", double.NaN), ("positive infinity", double.PositiveInfinity),
+            ("negative infinity", double.NegativeInfinity), ("negative", -3.0), ("float.MaxValue", (double)float.MaxValue),
+            ("double.MaxValue", double.MaxValue), ("normal", 1.5) })
+        {
+            Check($"Exit Scale {label} keeps a stationary two-member group intact on Refresh", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                m.Configure(null, d, true, (float)scale, false);
+                m.RefreshAllObjects();
+                Assert(g.ObjectIDs.Contains(a.InstanceGuid), "direct configuration: Refresh removed the first member");
+                Assert(g.ObjectIDs.Contains(b.InstanceGuid), "direct configuration: Refresh removed the second member");
+                Assert(g.ObjectIDs.Count == 2, $"direct configuration members: expected 2, actual {g.ObjectIDs.Count}");
+                Assert(m.LastChangeCount == 0, $"direct configuration changes: expected 0, actual {m.LastChangeCount}");
+                var owner = AddOwner(d, ref m);
+                owner.Solve(new DataAccess { ExitScale = scale });
+                owner.Solve(new DataAccess { ExitScale = scale, Refresh = true });
+                Assert(g.ObjectIDs.Contains(a.InstanceGuid), "component input: Refresh removed the first member");
+                Assert(g.ObjectIDs.Contains(b.InstanceGuid), "component input: Refresh removed the second member");
+                Assert(g.ObjectIDs.Count == 2, $"component input members: expected 2, actual {g.ObjectIDs.Count}");
+                Assert(m.LastChangeCount == 0, $"component input changes: expected 0, actual {m.LastChangeCount}");
+                Assert(d.UndoServer.UndoCount == 0, $"undo count: expected 0, actual {d.UndoServer.UndoCount}");
+            });
+        }
+        Check("Exit Scale normalization maps NaN to the default and clamps to 0-1000", () =>
+        {
+            foreach (var (input, expected) in new[] { (double.NaN, 1f), (double.PositiveInfinity, 1000f),
+                (double.NegativeInfinity, 0f), (-3.0, 0f), (-0.0, 0f), (0.0, 0f), (1.5, 1.5f), (999.5, 999.5f),
+                (1000.0, 1000f), (1000.5, 1000f), ((double)float.MaxValue, 1000f), (double.MaxValue, 1000f) })
+            {
+                var actual = GroupMembershipManager.NormalizeExitScale(input);
+                Assert(actual == expected, $"NormalizeExitScale({input}): expected {expected}, actual {actual}");
+            }
         });
         Check("Small member near the group edge is retained", () =>
         {
@@ -845,22 +898,151 @@ class Program
             Assert(g.ObjectIDs.Contains(added.InstanceGuid) && !g.ObjectIDs.Contains(a.InstanceGuid)
                 && m.LastChangeCount == 0, "Refresh changed the reconciled placement");
         });
-        Check("Two-group transfer merges membership records with only the current drag", () =>
+        foreach (var multiple in new[] { false, true })
+        {
+            Check($"Two-group transfer merges membership records with only the current drag (objects: {(multiple ? 2 : 1)})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var stay = new Obj(30);
+                if (multiple) { d.Add(stay); g.AddObject(stay.InstanceGuid); }
+                var target = new GH_Group(d);
+                d.Add(target);
+                target.AddObject(o.InstanceGuid);
+                m.RefreshAllObjects();
+                d.UndoServer.UndoNames.Clear();
+                d.UndoServer.UndoNames.Add("Earlier edit");
+                c.Down();
+                d.UndoServer.UndoNames.Insert(0, "Drag");
+                a.Move(1000);
+                if (multiple) b.Move(940);
+                c.Up();
+                var expectedSource = multiple ? new[] { stay.InstanceGuid } : new[] { b.InstanceGuid };
+                var expectedTarget = multiple
+                    ? new[] { o.InstanceGuid, a.InstanceGuid, b.InstanceGuid }
+                    : new[] { o.InstanceGuid, a.InstanceGuid };
+                Assert(g.ObjectIDs.OrderBy(id => id).SequenceEqual(expectedSource.OrderBy(id => id)),
+                    $"source members: expected {expectedSource.Length}, actual {g.ObjectIDs.Count}");
+                Assert(target.ObjectIDs.OrderBy(id => id).SequenceEqual(expectedTarget.OrderBy(id => id)),
+                    $"target members: expected {expectedTarget.Length}, actual {target.ObjectIDs.Count}");
+                var expectedChanges = multiple ? 4 : 2;
+                Assert(m.LastChangeCount == expectedChanges,
+                    $"change count: expected {expectedChanges}, actual {m.LastChangeCount}");
+                Assert(d.UndoServer.UndoCount == 2, $"undo count: expected 2, actual {d.UndoServer.UndoCount}");
+                Assert(d.UndoServer.UndoNames[0] == "Drag", $"latest undo: expected Drag, actual {d.UndoServer.UndoNames[0]}");
+                Assert(d.UndoServer.UndoNames[1] == "Earlier edit", "unrelated undo history merged");
+            });
+        }
+        Check("A batch add skips later objects with duplicate ids and tracks the first ones", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
-            var target = new GH_Group(d);
-            d.Add(target);
-            target.AddObject(o.InstanceGuid);
+            m.Configure(null, d, true, 1, true);
+            // o is inside this group's outline without being a member, so any
+            // processing of o (as a placement or an external move) would add it.
+            var host = AddGroup(d, new Obj(990), new Obj(1030));
+            var fresh = new Obj(30);
+            var duplicateOfExisting = new Obj(30) { InstanceGuid = o.InstanceGuid };
+            var first = new Obj(40);
+            var duplicateInBatch = new Obj(5000) { InstanceGuid = first.InstanceGuid };
+            d.AddBatch(fresh, duplicateOfExisting, first, duplicateInBatch);
+            d.Selection.Add(fresh); d.Selection.Add(o); d.Selection.Add(first);
+            c.Down(); c.Up();
+            Assert(!host.ObjectIDs.Contains(o.InstanceGuid),
+                "a duplicate id replaced the existing object's added/settled state");
+            Assert(host.ObjectIDs.Count == 2, $"host members: expected 2, actual {host.ObjectIDs.Count}");
+            var expected = new[] { a.InstanceGuid, b.InstanceGuid, fresh.InstanceGuid, first.InstanceGuid };
+            Assert(g.ObjectIDs.OrderBy(id => id).SequenceEqual(expected.OrderBy(id => id)),
+                $"group members: expected a, b, fresh, first; actual count {g.ObjectIDs.Count}");
+            Assert(m.LastChangeCount == 2, $"change count: expected 2, actual {m.LastChangeCount}");
+            Assert(d.UndoServer.UndoCount == 1, $"undo count: expected 1, actual {d.UndoServer.UndoCount}");
+            Assert(m.DebugLog.Contains($"Duplicate object id {o.InstanceGuid}"), "existing-id duplicate was not logged");
+            Assert(m.DebugLog.Contains($"Duplicate object id {first.InstanceGuid}"), "in-batch duplicate was not logged");
+        });
+        Check("Adding a unique object does not re-log an older duplicate pair", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            m.Configure(null, d, true, 1, true);
+            d.Objects.Add(new Obj(3000) { InstanceGuid = o.InstanceGuid });
+            var logLengthBefore = m.DebugLog.Length;
+            d.Add(new Obj(4000));
+            var newLines = m.DebugLog.Substring(logLengthBefore);
+            Assert(!newLines.Contains("Duplicate object id"),
+                $"an unrelated add re-logged the existing duplicate: {newLines.Trim()}");
+            var stray = new Obj(5000) { InstanceGuid = a.InstanceGuid };
+            logLengthBefore = m.DebugLog.Length;
+            // The event announces an object the document does not hold at all.
+            d.Announce(stray);
+            Assert(m.DebugLog.Substring(logLengthBefore).Contains($"Duplicate object id {a.InstanceGuid}"),
+                "an event object absent from the document was not logged as rejected");
+        });
+        Check("A host replacing a group while a pass records undo does not leave later objects on a stale index", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            // Parent spans the anchors; Y sits in a [lock] child inside it; X is new inside it.
+            var x = new Obj(2100);
+            d.Add(x);
+            var y = new Obj(2200);
+            var child = AddGroup(d, y);
+            child.NickName = "[lock]";
+            var parent = AddGroup(d, new Obj(2000), new Obj(2400), child);
+            GH_Group replacement = null;
+            d.UndoUtil.Recorded = (name, group) =>
+            {
+                if (replacement != null) return;
+                // While X's membership is being recorded, the host swaps the child for
+                // a new instance with the same id that no longer holds Y.
+                replacement = new GH_Group(d) { InstanceGuid = child.InstanceGuid, NickName = "[lock]" };
+                d.Replace(child, replacement);
+            };
+            d.Selection.Add(x); d.Selection.Add(y);
+            c.Down(); x.Move(1); y.Move(1); c.Up();
+            Assert(replacement != null, "setup: the undo hook never ran");
+            Assert(parent.ObjectIDs.Contains(x.InstanceGuid), "X was not added to the parent");
+            Assert(parent.ObjectIDs.Contains(y.InstanceGuid),
+                "Y was left ungrouped: the released member was still seen inside the replaced child");
+            Assert(!replacement.ObjectIDs.Contains(y.InstanceGuid), "the replacement child regained Y");
+            Assert(m.LastChangeCount == 2, $"change count: expected 2, actual {m.LastChangeCount}");
+        });
+        foreach (var latestName in new[] { "Nudge", "drag" })
+        {
+            Check($"A latest undo record not named exactly Drag is not merged with membership records ({latestName})", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var target = AddGroup(d, o);
+                m.RefreshAllObjects();
+                d.UndoServer.UndoNames.Clear();
+                d.UndoServer.UndoNames.Add("Earlier edit");
+                c.Down();
+                d.UndoServer.UndoNames.Insert(0, latestName);
+                a.Move(1000);
+                c.Up();
+                Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "transfer did not leave the source");
+                Assert(target.ObjectIDs.Contains(a.InstanceGuid), "transfer did not reach the target");
+                Assert(d.UndoServer.UndoCount == 3, $"undo count: expected 3, actual {d.UndoServer.UndoCount}");
+                Assert(d.UndoServer.UndoNames[0] == "HopperGroup membership",
+                    $"latest undo: expected HopperGroup membership, actual {d.UndoServer.UndoNames[0]}");
+                Assert(d.UndoServer.UndoNames[1] == latestName,
+                    $"host record: expected {latestName}, actual {d.UndoServer.UndoNames[1]}");
+                Assert(d.UndoServer.UndoNames[2] == "Earlier edit", "unrelated undo history merged");
+            });
+        }
+        Check("A gesture that added more than one host undo record is not merged with membership records", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            var target = AddGroup(d, o);
             m.RefreshAllObjects();
             d.UndoServer.UndoNames.Clear();
             d.UndoServer.UndoNames.Add("Earlier edit");
             c.Down();
+            d.UndoServer.UndoNames.Insert(0, "Wire");
             d.UndoServer.UndoNames.Insert(0, "Drag");
             a.Move(1000);
             c.Up();
-            Assert(!g.ObjectIDs.Contains(a.InstanceGuid) && target.ObjectIDs.Contains(a.InstanceGuid), "transfer failed");
-            Assert(d.UndoServer.UndoCount == 2 && d.UndoServer.UndoNames[0] == "Drag"
-             && d.UndoServer.UndoNames[1] == "Earlier edit", "unrelated undo history merged");
+            Assert(!g.ObjectIDs.Contains(a.InstanceGuid), "transfer did not leave the source");
+            Assert(target.ObjectIDs.Contains(a.InstanceGuid), "transfer did not reach the target");
+            Assert(d.UndoServer.UndoCount == 4, $"undo count: expected 4, actual {d.UndoServer.UndoCount}");
+            Assert(d.UndoServer.UndoNames.SequenceEqual(new[] { "HopperGroup membership", "Drag", "Wire", "Earlier edit" }),
+                "undo names: expected HopperGroup membership, Drag, Wire, Earlier edit; actual "
+                + string.Join(", ", d.UndoServer.UndoNames));
         });
         Check("Refresh merges all membership changes into one undo record", () =>
         {
@@ -1275,17 +1457,22 @@ class Program
         Check("Grasshopper Disable stops an in-progress drag and unlock uses the current layout", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
-            var owner = new HopperGroupComponent();
-            m.Dispose(); m = owner.Manager;
-            m.Configure(owner, d, true, 1, false);
+            var owner = AddOwner(d, ref m);
+            Assert(c.HandlerCount == 7, $"canvas handlers before Disable: expected 7, actual {c.HandlerCount}");
+            var refreshes = owner.RefreshCount;
             c.Down();
             owner.Locked = true;
+            Assert(c.HandlerCount == 0, $"canvas handlers after Disable: expected 0, actual {c.HandlerCount}");
+            Assert(d.HandlerCount == 0, $"document handlers after Disable: expected 0, actual {d.HandlerCount}");
             a.Move(500); b.Move(500); c.Up();
             m.RefreshAllObjects();
-            Assert(g.ObjectIDs.Count == 2 && d.UndoServer.UndoCount == 0 && owner.RefreshCount == 0,
-                "host-disabled component still processed movement");
-            Assert(c.HandlerCount == 0 && d.HandlerCount == 0, "host Disable left event handlers attached");
+            Assert(g.ObjectIDs.Count == 2, $"members after disabled drag: expected 2, actual {g.ObjectIDs.Count}");
+            Assert(d.UndoServer.UndoCount == 0, $"undo count: expected 0, actual {d.UndoServer.UndoCount}");
+            Assert(owner.RefreshCount == refreshes, "host-disabled component recomputed its outputs");
+            Assert(m.Status == "Off", $"status: expected Off, actual {m.Status}");
             owner.Locked = false;
+            Assert(c.HandlerCount == 7, $"canvas handlers after unlock: expected 7, actual {c.HandlerCount}");
+            Assert(d.HandlerCount == 3, $"document handlers after unlock: expected 3, actual {d.HandlerCount}");
             a.Move(5);
             m.RefreshAllObjects();
             Assert(g.ObjectIDs.Count == 2, "unlock restored the stale boundary");
@@ -1295,39 +1482,52 @@ class Program
         Check("A component loaded locked stays inactive even with Enabled true", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
-            var owner = new HopperGroupComponent { Locked = true };
-            m.Configure(owner, d, true, 1, false);
+            // The manager also refuses a locked owner when configured directly.
+            m.Configure(new HopperGroupComponent { Locked = true }, d, true, 1, false);
+            Assert(c.HandlerCount == 0, $"direct canvas handlers: expected 0, actual {c.HandlerCount}");
+            Assert(d.HandlerCount == 0, $"direct document handlers: expected 0, actual {d.HandlerCount}");
+            var owner = AddOwner(d, ref m, locked: true);
+            owner.Solve(new DataAccess());
             c.Down(); a.Move(500); c.Up();
             m.RefreshAllObjects();
-            Assert(g.ObjectIDs.Count == 2 && d.UndoServer.UndoCount == 0
-                && c.HandlerCount == 0 && d.HandlerCount == 0, "loaded disabled component ran");
+            Assert(g.ObjectIDs.Count == 2, $"members: expected 2, actual {g.ObjectIDs.Count}");
+            Assert(d.UndoServer.UndoCount == 0, $"undo count: expected 0, actual {d.UndoServer.UndoCount}");
+            Assert(c.HandlerCount == 0, $"canvas handlers: expected 0, actual {c.HandlerCount}");
+            Assert(d.HandlerCount == 0, $"document handlers: expected 0, actual {d.HandlerCount}");
         });
         Check("Unlocking does not override a false Enabled input", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
-            var owner = new HopperGroupComponent();
-            m.Dispose(); m = owner.Manager;
-            m.Configure(owner, d, false, 1, false);
+            var owner = AddOwner(d, ref m);
+            owner.Solve(new DataAccess { Enabled = false });
+            Assert(c.HandlerCount == 0, $"canvas handlers after Enabled=false: expected 0, actual {c.HandlerCount}");
             owner.Locked = true;
             owner.Locked = false;
             c.Down(); a.Move(500); c.Up();
             m.RefreshAllObjects();
-            Assert(g.ObjectIDs.Count == 2 && d.UndoServer.UndoCount == 0
-                && c.HandlerCount == 0 && d.HandlerCount == 0, "unlock overrode Enabled=false");
+            Assert(g.ObjectIDs.Count == 2, $"members: expected 2, actual {g.ObjectIDs.Count}");
+            Assert(d.UndoServer.UndoCount == 0, $"undo count: expected 0, actual {d.UndoServer.UndoCount}");
+            Assert(c.HandlerCount == 0, $"canvas handlers after unlock: expected 0, actual {c.HandlerCount}");
+            Assert(d.HandlerCount == 0, $"document handlers after unlock: expected 0, actual {d.HandlerCount}");
         });
-        Check("Disposed manager cannot be restarted by an owner enable event", () =>
+        foreach (var unload in new[] { false, true })
         {
-            var (d, c, m, g, a, b, o) = Setup();
-            var owner = new HopperGroupComponent();
-            m.Dispose(); m = owner.Manager;
-            m.Configure(owner, d, true, 1, false);
-            m.Dispose();
-            owner.Locked = true; owner.Locked = false;
-            c.Down(); a.Move(500); c.Up();
-            m.RefreshAllObjects();
-            Assert(g.ObjectIDs.Count == 2 && c.HandlerCount == 0 && d.HandlerCount == 0,
-                "disposed manager resumed handling events");
-        });
+            Check($"A {(unload ? "unloaded" : "removed")} component cannot be restarted by an enable event", () =>
+            {
+                var (d, c, m, g, a, b, o) = Setup();
+                var owner = AddOwner(d, ref m);
+                if (unload) owner.DocumentContextChanged(d, GH_DocumentContext.Unloaded);
+                else d.Delete(owner);
+                Assert(c.HandlerCount == 0, $"canvas handlers after leaving: expected 0, actual {c.HandlerCount}");
+                Assert(d.HandlerCount == 0, $"document handlers after leaving: expected 0, actual {d.HandlerCount}");
+                owner.Locked = true; owner.Locked = false;
+                c.Down(); a.Move(500); c.Up();
+                m.RefreshAllObjects();
+                Assert(g.ObjectIDs.Count == 2, $"members: expected 2, actual {g.ObjectIDs.Count}");
+                Assert(c.HandlerCount == 0, $"canvas handlers after unlock: expected 0, actual {c.HandlerCount}");
+                Assert(d.HandlerCount == 0, $"document handlers after unlock: expected 0, actual {d.HandlerCount}");
+            });
+        }
         Check("Changing a child member does not remove the child group", () =>
         {
             var (d, c, m, g, a, b, o) = Setup();
@@ -1523,17 +1723,26 @@ class Program
             Check($"Disabling clears the GG prompt without solving its owner (host Disable: {hostDisable})", () =>
             {
                 var (d, c, m, g, a, b, o) = Setup();
-                var owner = new HopperGroupComponent();
-                m.Dispose(); m = owner.Manager;
-                m.Configure(owner, d, true, 1, false);
+                HopperGroupComponent owner;
+                // Host Disable arrives through the registered component's Enabled event.
+                if (hostDisable) owner = AddOwner(d, ref m);
+                else
+                {
+                    owner = new HopperGroupComponent();
+                    m.Dispose(); m = owner.Manager;
+                    m.Configure(owner, d, true, 1, false);
+                }
                 d.Selection.Add(o); c.GG();
                 var refreshCount = owner.RefreshCount;
                 Assert(owner.Message != string.Empty, "GG was not visibly armed before disable");
                 if (hostDisable) owner.Locked = true;
                 else m.Configure(owner, d, false, 1, false);
-                Assert(m.ShortcutPrompt == string.Empty && owner.Message == string.Empty
-                    && owner.RefreshCount == refreshCount && c.HandlerCount == 0 && d.HandlerCount == 0,
-                    "disable left the prompt visible, solved the owner, or retained handlers");
+                Assert(m.ShortcutPrompt == string.Empty, $"prompt after disable: expected empty, actual '{m.ShortcutPrompt}'");
+                Assert(owner.Message == string.Empty, $"component message after disable: expected empty, actual '{owner.Message}'");
+                Assert(owner.RefreshCount == refreshCount,
+                    $"output refreshes: expected {refreshCount}, actual {owner.RefreshCount}");
+                Assert(c.HandlerCount == 0, $"canvas handlers: expected 0, actual {c.HandlerCount}");
+                Assert(d.HandlerCount == 0, $"document handlers: expected 0, actual {d.HandlerCount}");
                 if (hostDisable) owner.Locked = false;
                 else m.Configure(owner, d, true, 1, false);
                 c.TapG();
@@ -1757,14 +1966,21 @@ class Program
             d.UndoServer.UndoNames.Insert(0, "Drag");
             var undoCount = d.UndoServer.UndoCount;
             a.Move(-500); c.Up();
-            Assert(target.ObjectIDs.Contains(child.InstanceGuid) && !outer.ObjectIDs.Contains(child.InstanceGuid)
-                && child.ObjectIDs.Contains(leaf.InstanceGuid) && !target.ObjectIDs.Contains(leaf.InstanceGuid)
-                && leaf.ObjectIDs.Contains(o.InstanceGuid),
-                "unrelated drag lost the pending transfer or flattened the subtree");
-            Assert(d.UndoServer.UndoCount == undoCount, "pending transfer was split from the native drag undo record");
+            Assert(target.ObjectIDs.Contains(child.InstanceGuid), "pending external transfer did not reach the target");
+            Assert(!outer.ObjectIDs.Contains(child.InstanceGuid), "pending external transfer kept its old parent");
+            Assert(child.ObjectIDs.SequenceEqual(new[] { leaf.InstanceGuid }), "transferred subtree lost its nested group");
+            Assert(!target.ObjectIDs.Contains(leaf.InstanceGuid), "transfer flattened the subtree into the target");
+            Assert(leaf.ObjectIDs.SequenceEqual(new[] { o.InstanceGuid }), "leaf group lost its external member");
+            Assert(g.ObjectIDs.SequenceEqual(new[] { b.InstanceGuid }), "native drag did not remove only its moved member");
+            Assert(!outer.ObjectIDs.Contains(a.InstanceGuid) && !target.ObjectIDs.Contains(a.InstanceGuid),
+                "native drag placed its member in a group it did not enter");
+            Assert(m.LastChangeCount == 3, $"change count: expected 3, actual {m.LastChangeCount}");
+            Assert(d.UndoServer.UndoCount == undoCount,
+                $"undo count: expected {undoCount} (merged into native drag), actual {d.UndoServer.UndoCount}");
+            Assert(d.UndoServer.UndoNames.SequenceEqual(new[] { "Drag" }), "latest undo record was not the merged native drag");
             m.RefreshAllObjects();
-            Assert(target.ObjectIDs.Contains(child.InstanceGuid) && m.LastChangeCount == 0,
-                "Refresh changed the reconciled nested transfer");
+            Assert(target.ObjectIDs.Contains(child.InstanceGuid), "Refresh undid the reconciled nested transfer");
+            Assert(m.LastChangeCount == 0, $"Refresh change count: expected 0, actual {m.LastChangeCount}");
         });
         Console.WriteLine("Failed: " + failures);
         Environment.ExitCode = failures == 0 ? 0 : 1;

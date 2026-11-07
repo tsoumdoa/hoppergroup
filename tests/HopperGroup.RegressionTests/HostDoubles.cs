@@ -209,7 +209,14 @@ namespace Grasshopper.Kernel
         {
             s = server;
         }
-        public void RecordGenericObjectEvent(string name, GH_Group group) => s.UndoNames.Insert(0, name);
+        // The host raises UndoStateChanged synchronously while recording; tests hook
+        // that moment here to mutate the document mid-pass.
+        public Action<string, GH_Group> Recorded;
+        public void RecordGenericObjectEvent(string name, GH_Group group)
+        {
+            s.UndoNames.Insert(0, name);
+            Recorded?.Invoke(name, group);
+        }
         public void MergeRecords(int n)
         {
             if (n > 1 && n <= s.UndoCount) s.UndoNames.RemoveRange(0, n - 1);
@@ -254,6 +261,22 @@ namespace Grasshopper.Kernel
             Objects.Add(obj);
             if (obj is GH_Component component) component.AddedToDocument(this);
             ObjectsAdded?.Invoke(this, new GH_DocObjectEventArgs { Objects = new() { obj } });
+        }
+        // Raise ObjectsAdded without touching Objects, as a host that already holds
+        // (or never held) the announced instances would.
+        public void Announce(params IGH_DocumentObject[] objects) =>
+            ObjectsAdded?.Invoke(this, new GH_DocObjectEventArgs { Objects = objects.ToList() });
+        // Swap an instance in place (same id, same count) and announce the new one.
+        public void Replace(IGH_DocumentObject existing, IGH_DocumentObject replacement)
+        {
+            Objects[Objects.IndexOf(existing)] = replacement;
+            Announce(replacement);
+        }
+        // One ObjectsAdded notification for several objects, as for a paste.
+        public void AddBatch(params IGH_DocumentObject[] objects)
+        {
+            Objects.AddRange(objects);
+            ObjectsAdded?.Invoke(this, new GH_DocObjectEventArgs { Objects = objects.ToList() });
         }
         public void Delete(IGH_DocumentObject obj)
         {
@@ -391,9 +414,11 @@ namespace Rhino
 #if !REAL_WINFORMS
 namespace System.Drawing
 {
-    public class Bitmap
+    public class Bitmap : IDisposable
     {
         public Bitmap(System.IO.Stream stream) { }
+        public Bitmap(Bitmap source) { }
+        public void Dispose() { }
     }
 }
 #endif

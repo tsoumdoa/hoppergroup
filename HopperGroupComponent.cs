@@ -1,6 +1,5 @@
 using System;
 using System.Drawing;
-using System.Reflection;
 using Grasshopper.Kernel;
 
 namespace HopperGroup
@@ -38,7 +37,7 @@ namespace HopperGroup
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddBooleanParameter("Enabled", "Enabled", "Enable automatic group membership updates.", GH_ParamAccess.item, true);
-            pManager.AddNumberParameter("Exit Scale", "Exit", "Scales the exit buffer: 1.5 times object size, clamped to 40–120 canvas units before scaling. Zero means no buffer.", GH_ParamAccess.item, _exitScale);
+            pManager.AddNumberParameter("Exit Scale", "Exit", "Scales the exit buffer: 1.5 times object size, clamped to 40–120 canvas units before scaling. Zero means no buffer. Clamped to 0–1000; an invalid number uses 1.", GH_ParamAccess.item, _exitScale);
             pManager.AddBooleanParameter("Refresh", "Refresh", "Re-apply membership from the layout, overwriting manual membership edits. Skips [lock] groups. Ctrl+Z undoes.", GH_ParamAccess.item, false);
             pManager.AddBooleanParameter("Debug", "Debug", "Enable debug logging.", GH_ParamAccess.item, false);
         }
@@ -64,7 +63,7 @@ namespace HopperGroup
             DA.GetData(3, ref debug);
 
             _enabled = enabled;
-            _exitScale = Math.Max(0.0, exitScale);
+            _exitScale = GroupMembershipManager.NormalizeExitScale(exitScale);
             _debug = debug;
 
             var doc = OnPingDocument();
@@ -134,6 +133,9 @@ namespace HopperGroup
             });
         }
 
+        // Grasshopper does not solve a locked component, so its own Disable command
+        // must stop the event handlers without waiting for SolveInstance. This is the
+        // only Enabled-event path: the registry decides ownership and the manager follows.
         private void OnComponentChanged(IGH_DocumentObject sender, GH_ObjectChangedEventArgs e) =>
             _manager.Guard("Component.ObjectChanged", () =>
             {
@@ -235,21 +237,12 @@ namespace HopperGroup
         {
             get
             {
-                var assembly = Assembly.GetExecutingAssembly();
-                foreach (var resourceName in assembly.GetManifestResourceNames())
+                using (var stream = typeof(HopperGroupComponent).Assembly.GetManifestResourceStream("HopperGroup.icon.png"))
                 {
-                    if (!resourceName.EndsWith("icon.png", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    using (var stream = assembly.GetManifestResourceStream(resourceName))
-                    {
-                        return stream == null ? null : new Bitmap(stream);
-                    }
+                    if (stream == null) return null;
+                    // Detach the returned bitmap from the resource stream's lifetime.
+                    using (var bitmap = new Bitmap(stream)) return new Bitmap(bitmap);
                 }
-
-                return null;
             }
         }
 
