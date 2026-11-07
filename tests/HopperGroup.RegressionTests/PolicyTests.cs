@@ -47,6 +47,54 @@ internal static class PolicyTests
 
     internal static void Run(Action<string, Action> check)
     {
+        // Shake-off from nested groups: m sits in child (with a sibling), child in parent, parent optionally in grand.
+        foreach (var levels in new[] { 2, 3 })
+        {
+            foreach (var refresh in new[] { false, true })
+            {
+                foreach (var directParent in new[] { false, true })
+                {
+                    check($"Shaking a member out of its nested child drops it into the parent (levels: {levels}, Refresh: {refresh}, direct parent member: {directParent})", () =>
+                    {
+                        using var f = new Fixture();
+                        var m = new Obj(50); var child = f.Group(m, new Obj(80));
+                        var parent = f.Group(child, new Obj(-200, -100), new Obj(300, 200));
+                        var grand = levels == 3 ? f.Group(parent, new Obj(-400, -300), new Obj(700, 400)) : null;
+                        if (directParent) parent.AddObject(m.InstanceGuid);
+                        f.Start(); f.Document.Selection.Add(m);
+                        if (refresh) { m.Move(150); f.Manager.RefreshAllObjects(); } else f.Drag(m, 150);
+                        Assert(!child.ObjectIDs.Contains(m.InstanceGuid) && parent.ObjectIDs.Count(id => id == m.InstanceGuid) == 1
+                            && parent.ObjectIDs.Contains(child.InstanceGuid) && (grand == null || !grand.ObjectIDs.Contains(m.InstanceGuid)),
+                            "member shaken out of its child did not land once in the parent");
+                        Assert(refresh || f.Document.UndoServer.UndoCount == 1, "shake-off into the parent took more than one undo step");
+                    });
+                }
+                check($"Shaking a member out of every nested level stops at the innermost group still around it (levels: {levels}, Refresh: {refresh})", () =>
+                {
+                    using var f = new Fixture();
+                    var m = new Obj(50); var child = f.Group(m, new Obj(80));
+                    var parent = f.Group(child, new Obj(-200, -100), new Obj(300, 200));
+                    var grand = levels == 3 ? f.Group(parent, new Obj(-400, -300), new Obj(700, 400)) : null;
+                    f.Start(); f.Document.Selection.Add(m);
+                    if (refresh) { m.Move(600); f.Manager.RefreshAllObjects(); } else f.Drag(m, 600);
+                    Assert(!child.ObjectIDs.Contains(m.InstanceGuid) && !parent.ObjectIDs.Contains(m.InstanceGuid)
+                        && (grand == null || grand.ObjectIDs.Contains(m.InstanceGuid)), "member did not leave the levels it cleared");
+                    if (grand == null) return;
+                    if (refresh) { m.Move(1000); f.Manager.RefreshAllObjects(); } else f.Drag(m, 1000);
+                    Assert(!grand.ObjectIDs.Contains(m.InstanceGuid) && grand.ObjectIDs.Contains(parent.InstanceGuid)
+                        && parent.ObjectIDs.Contains(child.InstanceGuid), "member could not leave the outermost group");
+                });
+            }
+        }
+        check("A member leaving a locked nested child stays indirect in the parent", () =>
+        {
+            using var f = new Fixture();
+            var m = new Obj(50); var child = f.Group(m, new Obj(80)); child.NickName = "[lock]";
+            var parent = f.Group(child, new Obj(-200, -100), new Obj(300, 200));
+            f.Start(); f.Document.Selection.Add(m); f.Drag(m, 150);
+            Assert(child.ObjectIDs.Contains(m.InstanceGuid) && !parent.ObjectIDs.Contains(m.InstanceGuid),
+                "locked child lost its member or the parent duplicated it");
+        });
         foreach (var refresh in new[] { false, true })
         {
             foreach (var cyclicBranch in new[] { false, true })
