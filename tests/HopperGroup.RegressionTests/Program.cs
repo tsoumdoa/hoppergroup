@@ -957,6 +957,51 @@ class Program
             Assert(m.DebugLog.Contains($"Duplicate object id {o.InstanceGuid}"), "existing-id duplicate was not logged");
             Assert(m.DebugLog.Contains($"Duplicate object id {first.InstanceGuid}"), "in-batch duplicate was not logged");
         });
+        Check("Adding a unique object does not re-log an older duplicate pair", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            m.Configure(null, d, true, 1, true);
+            d.Objects.Add(new Obj(3000) { InstanceGuid = o.InstanceGuid });
+            var logLengthBefore = m.DebugLog.Length;
+            d.Add(new Obj(4000));
+            var newLines = m.DebugLog.Substring(logLengthBefore);
+            Assert(!newLines.Contains("Duplicate object id"),
+                $"an unrelated add re-logged the existing duplicate: {newLines.Trim()}");
+            var stray = new Obj(5000) { InstanceGuid = a.InstanceGuid };
+            logLengthBefore = m.DebugLog.Length;
+            // The event announces an object the document does not hold at all.
+            d.Announce(stray);
+            Assert(m.DebugLog.Substring(logLengthBefore).Contains($"Duplicate object id {a.InstanceGuid}"),
+                "an event object absent from the document was not logged as rejected");
+        });
+        Check("A host replacing a group while a pass records undo does not leave later objects on a stale index", () =>
+        {
+            var (d, c, m, g, a, b, o) = Setup();
+            // Parent spans the anchors; Y sits in a [lock] child inside it; X is new inside it.
+            var x = new Obj(2100);
+            d.Add(x);
+            var y = new Obj(2200);
+            var child = AddGroup(d, y);
+            child.NickName = "[lock]";
+            var parent = AddGroup(d, new Obj(2000), new Obj(2400), child);
+            GH_Group replacement = null;
+            d.UndoUtil.Recorded = (name, group) =>
+            {
+                if (replacement != null) return;
+                // While X's membership is being recorded, the host swaps the child for
+                // a new instance with the same id that no longer holds Y.
+                replacement = new GH_Group(d) { InstanceGuid = child.InstanceGuid, NickName = "[lock]" };
+                d.Replace(child, replacement);
+            };
+            d.Selection.Add(x); d.Selection.Add(y);
+            c.Down(); x.Move(1); y.Move(1); c.Up();
+            Assert(replacement != null, "setup: the undo hook never ran");
+            Assert(parent.ObjectIDs.Contains(x.InstanceGuid), "X was not added to the parent");
+            Assert(parent.ObjectIDs.Contains(y.InstanceGuid),
+                "Y was left ungrouped: the released member was still seen inside the replaced child");
+            Assert(!replacement.ObjectIDs.Contains(y.InstanceGuid), "the replacement child regained Y");
+            Assert(m.LastChangeCount == 2, $"change count: expected 2, actual {m.LastChangeCount}");
+        });
         foreach (var latestName in new[] { "Nudge", "drag" })
         {
             Check($"A latest undo record not named exactly Drag is not merged with membership records ({latestName})", () =>

@@ -57,6 +57,9 @@ namespace HopperGroup
         private bool _enabled;
         private bool _debug;
         private bool _handlingDrop;
+        // Bumped on every ObjectsAdded/ObjectsDeleted so an index built during a pass
+        // is rebuilt if a host callback changes the document mid-pass.
+        private int _documentGeneration;
         private bool _hasMouseDownSnapshot;
         private bool _hasSettledLayout;
         private Point _mouseDownLocation;
@@ -89,8 +92,10 @@ namespace HopperGroup
         {
             var wasEnabled = _enabled;
             var documentChanged = _document != document;
-            // The owning component handles its own Enabled event and reconfigures the
-            // session through DocumentSessionRegistry; the Locked check stays defensive.
+            // Enabled/Locked changes after this call reach the manager only through the
+            // owning component (OnComponentChanged -> DocumentSessionRegistry), so an
+            // owner must be registered there. The Locked check below covers the state
+            // at configuration time for any caller.
             _owner = owner;
             _enabled = enabled && document != null && (_owner == null || !_owner.Locked);
             _exitScale = NormalizeExitScale(exitScale);
@@ -297,20 +302,20 @@ namespace HopperGroup
 
         private void OnObjectsAddedCore(object sender, GH_DocObjectEventArgs e)
         {
+            _documentGeneration++;
             if (!_enabled)
             {
                 return;
             }
 
-            var objectsById = BuildObjectIndex(_document.Objects);
+            // One quiet index per batch; each rejected event object is logged below.
+            var objectsById = BuildObjectIndex(_document.Objects, logDuplicates: false);
             foreach (var obj in e.Objects.Where(obj => obj != null && !(obj is GH_Group)))
             {
                 // Keep only the first document object with this id (by reference).
-                // BuildObjectIndex has already logged a later object with a known id.
-                var found = objectsById.TryGetValue(obj.InstanceGuid, out var first);
-                if (!found || !ReferenceEquals(first, obj))
+                if (!objectsById.TryGetValue(obj.InstanceGuid, out var first) || !ReferenceEquals(first, obj))
                 {
-                    if (!found) Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
+                    Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
                     continue;
                 }
                 _addedObjectIds.Add(obj.InstanceGuid);
@@ -329,6 +334,7 @@ namespace HopperGroup
 
         private void OnObjectsDeletedCore(object sender, GH_DocObjectEventArgs e)
         {
+            _documentGeneration++;
             if (!_enabled)
             {
                 return;
@@ -1107,9 +1113,21 @@ namespace HopperGroup
                 selectionContext = selectionContext ?? SelectionContext.Empty;
                 var carriedIds = new HashSet<Guid>(_groups.Where(group => selectionContext.IsCarriedGroup(group.Id))
                     .Select(group => group.Id));
-                // A pass edits memberships but never adds or removes objects, so one
-                // id-to-object index serves both phases. Membership queries stay live.
-                var objectsById = BuildObjectIndex(_document.Objects);
+                // A pass edits memberships, so one id-to-object index serves both phases
+                // and membership queries stay live. Undo recording raises host events,
+                // and a subscriber could add or replace objects mid-pass: rebuild the
+                // index whenever the document generation has moved on.
+                Dictionary<Guid, IGH_DocumentObject> objectsById = null;
+                var indexGeneration = 0;
+                Dictionary<Guid, IGH_DocumentObject> ObjectIndex()
+                {
+                    if (objectsById == null || indexGeneration != _documentGeneration)
+                    {
+                        objectsById = BuildObjectIndex(_document.Objects);
+                        indexGeneration = _documentGeneration;
+                    }
+                    return objectsById;
+                }
 
                 if (reconcileExternalMoves && _hasSettledLayout)
                 {
@@ -1162,7 +1180,7 @@ namespace HopperGroup
                             var memberContext = externalSnapshot != null && nativeMovedIds.Contains(obj.InstanceGuid)
                                 ? selectionContext
                                 : combinedContext;
-                            LastChangeCount += UpdateObjectMembership(obj, objectsById, recordedGroups, memberContext,
+                            LastChangeCount += UpdateObjectMembership(obj, ObjectIndex(), recordedGroups, memberContext,
                                 settledExitReferences, destinationContext);
                         }
 
@@ -1193,7 +1211,7 @@ namespace HopperGroup
                 var gestureExitReferences = CreateExitReferences();
                 foreach (var obj in objects)
                 {
-                    LastChangeCount += UpdateObjectMembership(obj, objectsById, recordedGroups, selectionContext,
+                    LastChangeCount += UpdateObjectMembership(obj, ObjectIndex(), recordedGroups, selectionContext,
                         gestureExitReferences);
                 }
 
@@ -1762,7 +1780,8 @@ namespace HopperGroup
             }
         }
 
-        private Dictionary<Guid, T> BuildObjectIndex<T>(IEnumerable<T> objects) where T : IGH_DocumentObject
+        private Dictionary<Guid, T> BuildObjectIndex<T>(IEnumerable<T> objects, bool logDuplicates = true)
+            where T : IGH_DocumentObject
         {
             var result = new Dictionary<Guid, T>();
             foreach (var obj in objects)
@@ -1770,7 +1789,7 @@ namespace HopperGroup
                 if (obj == null) continue;
                 if (result.ContainsKey(obj.InstanceGuid))
                 {
-                    Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
+                    if (logDuplicates) Log($"Duplicate object id {obj.InstanceGuid}; keeping the first object.");
                     continue;
                 }
                 result.Add(obj.InstanceGuid, obj);
