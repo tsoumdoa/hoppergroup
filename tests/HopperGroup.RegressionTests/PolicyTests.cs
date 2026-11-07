@@ -62,11 +62,13 @@ internal static class PolicyTests
                         var grand = levels == 3 ? f.Group(parent, new Obj(-400, -300), new Obj(700, 400)) : null;
                         if (directParent) parent.AddObject(m.InstanceGuid);
                         f.Start(); f.Document.Selection.Add(m);
-                        if (refresh) { m.Move(150); f.Manager.RefreshAllObjects(); } else f.Drag(m, 150);
+                        if (refresh) { m.Move(150); f.Manager.RefreshAllObjects(); }
+                        else { f.Canvas.Down(); f.Document.UndoServer.UndoNames.Insert(0, "Drag"); m.Move(150); f.Canvas.Up(); }
                         Assert(!child.ObjectIDs.Contains(m.InstanceGuid) && parent.ObjectIDs.Count(id => id == m.InstanceGuid) == 1
                             && parent.ObjectIDs.Contains(child.InstanceGuid) && (grand == null || !grand.ObjectIDs.Contains(m.InstanceGuid)),
                             "member shaken out of its child did not land once in the parent");
-                        Assert(refresh || f.Document.UndoServer.UndoCount == 1, "shake-off into the parent took more than one undo step");
+                        Assert(refresh || f.Document.UndoServer.UndoNames.SequenceEqual(new[] { "Drag" }),
+                            "shake-off into the parent did not merge with the native drag undo");
                     });
                 }
                 check($"Shaking a member out of every nested level stops at the innermost group still around it (levels: {levels}, Refresh: {refresh})", () =>
@@ -85,6 +87,21 @@ internal static class PolicyTests
                         && parent.ObjectIDs.Contains(child.InstanceGuid), "member could not leave the outermost group");
                 });
             }
+        }
+        foreach (var lockSecond in new[] { false, true })
+        {
+            check($"A member in two nested children reaches the parent only when both release it (second locked: {lockSecond})", () =>
+            {
+                using var f = new Fixture();
+                var m = new Obj(50); var first = f.Group(m, new Obj(80)); var second = f.Group(m, new Obj(20, 30));
+                if (lockSecond) second.NickName = "[lock]";
+                var parent = f.Group(first, second, new Obj(-200, -100), new Obj(300, 200));
+                f.Start(); f.Document.Selection.Add(m); f.Drag(m, 150);
+                Assert(!first.ObjectIDs.Contains(m.InstanceGuid) && second.ObjectIDs.Contains(m.InstanceGuid) == lockSecond
+                    && parent.ObjectIDs.Contains(m.InstanceGuid) == !lockSecond
+                    && parent.ObjectIDs.Count(id => id == m.InstanceGuid) <= 1,
+                    "a surviving holder was ignored or the member was dropped/duplicated");
+            });
         }
         check("A member leaving a locked nested child stays indirect in the parent", () =>
         {
