@@ -16,9 +16,9 @@
   
   <PropertyGroup>
     <!-- Specifies information for Assembly and Yak -->
-    <Version>0.2.11</Version>
+    <Version>0.2.12</Version>
     <Title>HopperGroup</Title>
-    <Company>AECTooling</Company>
+    <Company>AEC Tooling</Company>
     <Description>Automatic Grasshopper group membership manager</Description>
     <AssemblyIcon>icon.png</AssemblyIcon>
   </PropertyGroup>
