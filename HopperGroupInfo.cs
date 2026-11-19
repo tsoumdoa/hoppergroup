@@ -25,7 +25,7 @@ namespace HopperGroup
 
         public override string Description => "Automatic Grasshopper group membership manager";
 
-        public override string AuthorName => "AEC Tooling";
+        public override string AuthorName => "aectooling by tomoS";
 
         public override string AuthorContact => string.Empty;
 
